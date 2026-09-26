@@ -186,10 +186,12 @@ export function initSocketServer(io: SocketIOServer) {
           _id: eventId,
           messageId: eventId,
           type: 'system',
+          messageType: 'system',
           eventType: isCustomer ? 'customer_left' : 'astrologer_left',
           status: 'ended',
           userId,
           userRole: isCustomer ? 'customer' : 'astrologer',
+          senderRole: 'system',
           consultationId: cId,
           content: contentText,
           text: contentText,
@@ -245,6 +247,24 @@ export function initSocketServer(io: SocketIOServer) {
       for (const room of socket.rooms) {
         if (room.startsWith('consultation_')) {
           const cId = room.replace('consultation_', '');
+          // If the user still has another active socket connected in this room, do not emit a false leave event
+          const roomSockets = io.sockets.adapter.rooms.get(room);
+          let otherActiveSocket = false;
+          if (roomSockets) {
+            for (const sId of roomSockets) {
+              if (sId !== socket.id) {
+                const otherSock = io.sockets.sockets.get(sId) as AuthenticatedSocket | undefined;
+                if (otherSock && otherSock.userId === userId && otherSock.connected) {
+                  otherActiveSocket = true;
+                  break;
+                }
+              }
+            }
+          }
+          if (otherActiveSocket) {
+            console.log(`[Socket.IO] User ${userId} has another active socket in ${room}. Skipping leave on disconnect.`);
+            continue;
+          }
           await handleUserLeave(cId, 'disconnecting');
         }
       }
@@ -286,6 +306,14 @@ export function initSocketServer(io: SocketIOServer) {
         const terminalStates = ['ENDED', 'CANCELLED', 'EXPIRED', 'REFUNDED'];
         if (!terminalStates.includes(consultation.state)) {
           processedLeaveEvents.delete(`${consultationId}:${userId}`);
+          const leaveEventId = `sys_leave_${consultationId}_${userId}`;
+          const memList = inMemoryChatStore.get(consultationId);
+          if (memList) {
+            inMemoryChatStore.set(consultationId, memList.filter((m: any) => m.id !== leaveEventId));
+          }
+          if (mongoose.connection && mongoose.connection.readyState === 1) {
+            ChatMessage.deleteOne({ _id: leaveEventId }).catch(() => {});
+          }
         }
 
         const isCustomer = consultation.user_id === userId;

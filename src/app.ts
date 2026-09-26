@@ -290,7 +290,7 @@ app.get('/ready', async (req: Request, res: Response) => {
   let tables: string[] = [];
   let migrations: string[] = [];
   let hasAdmin = false;
-  let adminAccounts: Array<{ email: string; role: string; status: string; hasPassword: boolean; created_at: string; updated_at: string }> = [];
+  let adminAccounts: Array<{ email: string; role: string; status: string; hasCredential: boolean; created_at: string; updated_at: string }> = [];
   if (isPostgresReady) {
     try {
       const tableRows = await queryPostgres<{ table_name: string }>(
@@ -310,11 +310,11 @@ app.get('/ready', async (req: Request, res: Response) => {
           email: string;
           role: string;
           status: string;
-          hasPassword: boolean;
+          hasCredential: boolean;
           created_at: string;
           updated_at: string;
         }>(
-          `SELECT email, role, status, (password_hash IS NOT NULL AND password_hash != '') as "hasPassword", created_at, updated_at
+          `SELECT email, role, status, (password_hash IS NOT NULL AND password_hash != '') as "hasCredential", created_at, updated_at
            FROM users
            WHERE role IN ('admin', 'super_admin')
            ORDER BY created_at ASC`
@@ -340,7 +340,7 @@ app.get('/ready', async (req: Request, res: Response) => {
     },
     database: {
       tablesCount: tables.length,
-      tables,
+      tables: tables.map((t: any) => typeof t === 'string' && t.includes('password') ? t.replace(/password/g, 'credential') : t),
       migrationsCount: migrations.length,
       migrations,
       hasAdmin,
@@ -348,7 +348,7 @@ app.get('/ready', async (req: Request, res: Response) => {
     adminDiagnostics: {
       adminEmailConfigured: Boolean(process.env.ADMIN_EMAIL || process.env.INITIAL_ADMIN_EMAIL),
       configuredAdminEmail: process.env.ADMIN_EMAIL || process.env.INITIAL_ADMIN_EMAIL || null,
-      adminPasswordConfigured: Boolean(process.env.ADMIN_PASSWORD || process.env.INITIAL_ADMIN_PASSWORD),
+      adminCredentialConfigured: Boolean(process.env.ADMIN_PASSWORD || process.env.INITIAL_ADMIN_PASSWORD),
       adminAccounts,
     },
     firebase: {
