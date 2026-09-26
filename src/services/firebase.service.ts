@@ -14,6 +14,7 @@ export interface DecodedFirebaseToken {
 }
 
 let firebaseAppInitialized = false;
+let lastFirebaseInitError: string | null = null;
 
 export function initFirebaseAdmin(): App | null {
   const existingApps = getApps();
@@ -23,38 +24,80 @@ export function initFirebaseAdmin(): App | null {
 
   const projectId = process.env.FIREBASE_PROJECT_ID;
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  let privateKey = process.env.FIREBASE_PRIVATE_KEY;
+  const rawKey = process.env.FIREBASE_PRIVATE_KEY;
 
-  if (privateKey) {
-    // Replace escaped newlines if passed in single-line env var
-    privateKey = privateKey.replace(/\\n/g, '\n');
-  }
+  const hasProjectId = Boolean(projectId && projectId.trim());
+  const hasClientEmail = Boolean(clientEmail && clientEmail.trim());
+  const hasPrivateKey = Boolean(rawKey && rawKey.trim());
 
-  if (projectId && clientEmail && privateKey) {
+  console.log(
+    `[Firebase Admin] Environment check: FIREBASE_PROJECT_ID present=${hasProjectId}, FIREBASE_CLIENT_EMAIL present=${hasClientEmail}, FIREBASE_PRIVATE_KEY present=${hasPrivateKey}`
+  );
+
+  if (!hasProjectId || !hasClientEmail || !hasPrivateKey) {
+    const missing: string[] = [];
+    if (!hasProjectId) missing.push('FIREBASE_PROJECT_ID');
+    if (!hasClientEmail) missing.push('FIREBASE_CLIENT_EMAIL');
+    if (!hasPrivateKey) missing.push('FIREBASE_PRIVATE_KEY');
+    lastFirebaseInitError = `Missing required environment variables: ${missing.join(', ')}`;
+    console.warn(`[Firebase Admin] Warning: ${lastFirebaseInitError}`);
+  } else {
+    let formattedKey = rawKey!.trim();
+
+    // Handle case where entire service account JSON was pasted into FIREBASE_PRIVATE_KEY
+    if (formattedKey.startsWith('{') && formattedKey.endsWith('}')) {
+      try {
+        const parsedJson = JSON.parse(formattedKey);
+        if (parsedJson.private_key) {
+          formattedKey = parsedJson.private_key.trim();
+          console.log('[Firebase Admin] Detected and extracted private_key from JSON format.');
+        }
+      } catch {
+        // Not JSON, continue with normal string processing
+      }
+    }
+
+    // Strip surrounding double or single quotes if added by environment variable config
+    if (
+      (formattedKey.startsWith('"') && formattedKey.endsWith('"')) ||
+      (formattedKey.startsWith("'") && formattedKey.endsWith("'"))
+    ) {
+      formattedKey = formattedKey.slice(1, -1).trim();
+    }
+
+    // Convert literal escaped newlines (\n) to actual newlines
+    formattedKey = formattedKey.replace(/\\n/g, '\n');
+
     try {
       const app = initializeApp({
         credential: cert({
-          projectId,
-          clientEmail,
-          privateKey,
+          projectId: projectId!.trim(),
+          clientEmail: clientEmail!.trim(),
+          privateKey: formattedKey,
         }),
       });
       firebaseAppInitialized = true;
-      console.log('[Firebase Admin] Initialized successfully with service account credentials.');
+      lastFirebaseInitError = null;
+      console.log(`[Firebase Admin] Initialized successfully with service account for project: ${projectId!.trim()}`);
       return app;
-    } catch (err) {
-      console.error('[Firebase Admin] Failed to initialize with cert:', (err as Error).message);
+    } catch (err: any) {
+      lastFirebaseInitError = `cert() initialization failed: [${err.name || 'Error'}] ${err.message || 'Failed to parse credentials'}`;
+      console.error(`[Firebase Admin] Initialization failure: ${lastFirebaseInitError}`);
     }
-  } else if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+  }
+
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
     try {
       const app = initializeApp({
         credential: applicationDefault(),
       });
       firebaseAppInitialized = true;
+      lastFirebaseInitError = null;
       console.log('[Firebase Admin] Initialized with application default credentials.');
       return app;
-    } catch (err) {
-      console.error('[Firebase Admin] Failed to initialize with application default credentials:', (err as Error).message);
+    } catch (err: any) {
+      lastFirebaseInitError = `applicationDefault() failed: [${err.name || 'Error'}] ${err.message}`;
+      console.error(`[Firebase Admin] ${lastFirebaseInitError}`);
     }
   } else {
     // Graceful initialization for development/test if credentials not yet injected
@@ -113,7 +156,7 @@ export async function verifyFirebaseIdToken(token: string, isTestMode = false): 
 
   const app = getApps().length > 0 ? getApp() : initFirebaseAdmin();
   if (!app) {
-    throw new Error('Firebase Admin SDK is not initialized. Please verify FIREBASE_* environment variables.');
+    throw new Error('Firebase Admin SDK is not initialized: ' + (lastFirebaseInitError || 'Please verify FIREBASE_* environment variables.'));
   }
 
   try {
