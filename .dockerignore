@@ -1,0 +1,33 @@
+.git
+.github
+.idea
+.vscode
+.DS_Store
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Ignore environment credentials
+.env
+.env.*
+!.env.example
+
+# Ignore local output & dependencies
+node_modules
+dist
+build
+coverage
+
+# Ignore tests & scratch files
+test
+*.test.ts
+*.test.js
+test-*.mjs
+scratch_*.ts
+scratch_*.mjs
+prepare_call_test.ts
+
+# Ignore uploaded media in build context
+uploads/*
+!uploads/.gitkeep
