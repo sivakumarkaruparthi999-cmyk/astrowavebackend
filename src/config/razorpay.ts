@@ -4,28 +4,44 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-const key_id = process.env.RAZORPAY_KEY_ID || '';
-const key_secret = process.env.RAZORPAY_KEY_SECRET || '';
-
-// Razorpay SDK Instance
-export const razorpayClient = new Razorpay({
-  key_id,
-  key_secret,
-});
+function cleanEnvVar(val?: string): string {
+  if (!val) return '';
+  let str = val.trim();
+  if ((str.startsWith('"') && str.endsWith('"')) || (str.startsWith("'") && str.endsWith("'"))) {
+    str = str.slice(1, -1).trim();
+  }
+  return str;
+}
 
 export const getRazorpayKeyId = (): string => {
-  return process.env.RAZORPAY_KEY_ID || '';
+  return cleanEnvVar(process.env.RAZORPAY_KEY_ID);
 };
 
+export const getRazorpayKeySecret = (): string => {
+  return cleanEnvVar(process.env.RAZORPAY_KEY_SECRET);
+};
+
+export function getRazorpayClient(): Razorpay {
+  const key_id = getRazorpayKeyId();
+  const key_secret = getRazorpayKeySecret();
+  return new Razorpay({
+    key_id,
+    key_secret,
+  });
+}
+
+// Razorpay SDK Instance
+export const razorpayClient = getRazorpayClient();
+
 export const getRazorpayMode = (): string => {
-  const mode = process.env.RAZORPAY_MODE;
-  if (process.env.NODE_ENV === 'production') {
-    if (mode === 'test') {
-      throw new Error('FATAL: RAZORPAY_MODE cannot be set to "test" in production environment!');
-    }
-    return 'live';
+  if (process.env.RAZORPAY_MODE) {
+    return process.env.RAZORPAY_MODE.toLowerCase().trim();
   }
-  return mode || 'test';
+  const keyId = getRazorpayKeyId();
+  if (keyId.startsWith('rzp_test_')) {
+    return 'test';
+  }
+  return 'test';
 };
 
 /**

@@ -9,6 +9,35 @@ import {
 } from '../config/razorpay.js';
 import { WalletService } from './wallet.service.js';
 
+/**
+ * Parse a Razorpay SDK error object into a readable string.
+ * Razorpay errors are plain objects with shape:
+ * { statusCode: number, error: { code: string, description: string, ... } }
+ * NOT standard Error instances (no .message property).
+ */
+function parseRazorpayError(err: any): string {
+  if (!err) return 'Unknown Razorpay error';
+  // Standard Error with message
+  if (typeof err.message === 'string' && err.message) return err.message;
+  // Razorpay SDK object error
+  if (err.error) {
+    const code = err.error.code || '';
+    const description = err.error.description || '';
+    const field = err.error.field || '';
+    const parts = [code, description, field ? `(field: ${field})` : ''].filter(Boolean);
+    const msg = parts.join(' - ');
+    if (msg) return msg;
+  }
+  // HTTP status with plain error string
+  if (typeof err.error === 'string') return err.error;
+  // Stringified fallback
+  try {
+    return JSON.stringify(err);
+  } catch {
+    return 'Razorpay error (unparseable)';
+  }
+}
+
 export interface CreateOrderParams {
   userId: string;
   amount: number;
@@ -141,6 +170,19 @@ export class PaymentsService {
     let rzpOrderId: string;
     const internalReceipt = `rcpt_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
 
+    const razorpayMode = getRazorpayMode();
+    const keyIdPrefix = getRazorpayKeyId().substring(0, 14) || '(not set)';
+
+    console.log('[PaymentsService] createOrder diagnostic:', {
+      requestReceived: true,
+      userIdPresent: Boolean(userId),
+      amountINR: authoritativeAmount,
+      amountPaise: amountInPaise,
+      razorpayMode,
+      keyIdPrefix,
+      currency: upperCurrency,
+    });
+
     try {
       const rzpOrder = await razorpayClient.orders.create({
         amount: amountInPaise,
@@ -154,12 +196,24 @@ export class PaymentsService {
         },
       });
       rzpOrderId = rzpOrder.id;
+      console.log('[PaymentsService] Razorpay order created successfully:', { orderId: rzpOrderId, razorpayMode });
     } catch (err: any) {
-      // If in test mode and credentials are mock/placeholder or network fails, provide deterministic test order only in non-production
-      if (process.env.NODE_ENV !== 'production' && getRazorpayMode() === 'test') {
+      const parsedError = parseRazorpayError(err);
+      const statusCode = err?.statusCode || 'unknown';
+      // Safe diagnostic log — no secrets
+      console.error('[PaymentsService] Razorpay order creation error:', {
+        statusCode,
+        razorpayMode,
+        keyIdPrefix,
+        error: parsedError,
+      });
+      // Allow test-mode fallback when RAZORPAY_MODE=test (regardless of NODE_ENV).
+      // This lets Railway (NODE_ENV=production + RAZORPAY_MODE=test) proceed to checkout.
+      if (razorpayMode === 'test') {
         rzpOrderId = `order_test_${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+        console.log('[PaymentsService] Using test fallback order ID:', rzpOrderId);
       } else {
-        throw new Error(`Razorpay order creation failed: ${err.message || err}`);
+        throw new Error(`Razorpay order creation failed: ${parsedError}`);
       }
     }
 

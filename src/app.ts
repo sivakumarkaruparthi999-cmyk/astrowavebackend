@@ -351,6 +351,19 @@ app.get('/ready', async (req: Request, res: Response) => {
       clientEmailPrefix: process.env.FIREBASE_CLIENT_EMAIL ? process.env.FIREBASE_CLIENT_EMAIL.split('@')[0] : null,
       privateKeyConfigured: Boolean(process.env.FIREBASE_PRIVATE_KEY),
     },
+    razorpay: (() => {
+      const rawKeyId = (process.env.RAZORPAY_KEY_ID || '').trim();
+      const cleanKeyId = (rawKeyId.startsWith('"') || rawKeyId.startsWith("'")) ? rawKeyId.slice(1, -1).trim() : rawKeyId;
+      const mode = (process.env.RAZORPAY_MODE || (cleanKeyId.startsWith('rzp_test_') ? 'test' : 'unknown')).toLowerCase();
+      return {
+        mode,
+        keyIdPrefix: cleanKeyId ? cleanKeyId.substring(0, 14) : '(not set)',
+        keyIdPresent: Boolean(cleanKeyId),
+        keySecretPresent: Boolean((process.env.RAZORPAY_KEY_SECRET || '').trim()),
+        isTestKey: cleanKeyId.startsWith('rzp_test_'),
+        isLiveKey: cleanKeyId.startsWith('rzp_live_'),
+      };
+    })(),
     timestamp: new Date().toISOString(),
   };
 
