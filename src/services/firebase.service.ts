@@ -159,8 +159,37 @@ export async function verifyFirebaseIdToken(token: string, isTestMode = false): 
     throw new Error('Firebase Admin SDK is not initialized: ' + (lastFirebaseInitError || 'Please verify FIREBASE_* environment variables.'));
   }
 
+  const appProjectId = app.options.projectId || process.env.FIREBASE_PROJECT_ID || 'unknown';
+  const tokenLength = token ? token.length : 0;
+  const tokenPrefix = token ? token.substring(0, Math.min(10, token.length)) : '';
+
+  // Safely inspect unverified JWT header/payload without logging token contents
+  let unverifiedAudience: string | undefined;
+  let unverifiedIssuer: string | undefined;
+  try {
+    const parts = token.split('.');
+    if (parts.length === 3) {
+      const payloadJson = Buffer.from(parts[1], 'base64').toString('utf-8');
+      const payload = JSON.parse(payloadJson);
+      unverifiedAudience = payload.aud;
+      unverifiedIssuer = payload.iss;
+    }
+  } catch {
+    // If not standard JWT format, continue
+  }
+
+  console.log('[Firebase Auth Diagnostic]', {
+    tokenPresent: Boolean(token),
+    tokenLength,
+    tokenPrefix: `${tokenPrefix}...`,
+    appProjectId,
+    unverifiedAudience,
+    unverifiedIssuer,
+  });
+
   try {
     const decoded = await getAuth(app).verifyIdToken(token);
+    console.log('[Firebase Auth Diagnostic] Token verification succeeded for uid:', decoded.uid);
     return {
       uid: decoded.uid,
       email: decoded.email,
@@ -171,12 +200,22 @@ export async function verifyFirebaseIdToken(token: string, isTestMode = false): 
     };
   } catch (err: any) {
     const code = err?.code || '';
+    const message = err?.message || 'Unknown error';
+    console.error('[Firebase Auth Diagnostic] verifyIdToken failed:', {
+      code,
+      message,
+      appProjectId,
+      unverifiedAudience,
+      unverifiedIssuer,
+    });
+
     if (code === 'auth/id-token-expired') {
       throw new Error('Firebase ID token has expired. Please refresh your session.');
     }
     if (code === 'auth/argument-error' || code === 'auth/invalid-id-token') {
-      throw new Error('Invalid Firebase ID token provided.');
+      throw new Error(`Invalid Firebase ID token provided. (Detail: [${code}] ${message})`);
     }
-    throw new Error(`Firebase token verification failed: ${err.message || 'Unknown error'}`);
+    throw new Error(`Firebase token verification failed: [${code}] ${message}`);
   }
 }
+

@@ -3,23 +3,33 @@
 -- PostgreSQL RLS, Least Privilege Roles, Connection Bounds & Invariants
 -- ==============================================================================
 
--- 1. Create Least-Privilege Application Role
+-- 1. Create Least-Privilege Application Role (graceful if role exists or insufficient privileges on managed PG)
 DO $$
+DECLARE
+  db_name text;
 BEGIN
-  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'astrowave_app') THEN
-    CREATE ROLE astrowave_app WITH LOGIN PASSWORD 'astrowave_app_secure_pw' 
-      NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
-  END IF;
+  BEGIN
+    IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'astrowave_app') THEN
+      CREATE ROLE astrowave_app WITH LOGIN PASSWORD 'astrowave_app_secure_pw' 
+        NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+    END IF;
+  EXCEPTION WHEN insufficient_privilege THEN
+    RAISE NOTICE 'Skipping astrowave_app role creation due to insufficient privilege';
+  END;
+
+  BEGIN
+    SELECT current_database() INTO db_name;
+    EXECUTE format('GRANT CONNECT ON DATABASE %I TO astrowave_app', db_name);
+    GRANT USAGE ON SCHEMA public TO astrowave_app;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO astrowave_app;
+    GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO astrowave_app;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO astrowave_app;
+    ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO astrowave_app;
+  EXCEPTION WHEN OTHERS THEN
+    RAISE NOTICE 'Skipping astrowave_app grants: %', SQLERRM;
+  END;
 END
 $$;
-
--- Grant minimal necessary privileges to astrowave_app
-GRANT CONNECT ON DATABASE astrotalk TO astrowave_app;
-GRANT USAGE ON SCHEMA public TO astrowave_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO astrowave_app;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO astrowave_app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO astrowave_app;
-ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO astrowave_app;
 
 -- 2. Context Helper Functions for RLS
 CREATE OR REPLACE FUNCTION app_current_user_id() RETURNS UUID AS $$

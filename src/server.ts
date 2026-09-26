@@ -19,6 +19,21 @@ async function bootstrap() {
   // Connect to MongoDB
   await connectMongo();
 
+  // Ensure PostgreSQL schema migrations and admin account are initialized before accepting requests
+  try {
+    const { runMigrations } = await import('./migrations/migrate.js');
+    await runMigrations(false);
+  } catch (migErr) {
+    logger.error('PostgreSQL migration check encountered an error:', migErr);
+  }
+
+  try {
+    const { createOrUpdateAdmin } = await import('./scripts/create-admin.js');
+    await createOrUpdateAdmin(false);
+  } catch (adminErr) {
+    logger.error('Admin setup check encountered an error:', adminErr);
+  }
+
   // Create HTTP and WebSocket server
   const server = http.createServer(app);
 

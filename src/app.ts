@@ -21,7 +21,7 @@ import payoutsRoutes from './routes/payouts.routes.js';
 import astrologyRoutes from './routes/astrology.routes.js';
 import adminRoutes from './routes/admin.routes.js';
 
-import { checkDatabaseHealth, queryPostgresSingle } from './config/db.js';
+import { checkDatabaseHealth, queryPostgres, queryPostgresSingle } from './config/db.js';
 import { checkRedisHealth } from './config/redis.js';
 import { validateEnv, getConfigSummary } from './config/env.js';
 import { authenticate, AuthenticatedRequest } from './middleware/auth.middleware.js';
@@ -280,6 +280,35 @@ app.get('/ready', async (req: Request, res: Response) => {
   const isReady = isPostgresReady && isMongoReady;
   const statusCode = isReady ? 200 : 503;
 
+  // Retrieve public schema tables and migration metadata safely without sensitive data
+  let tables: string[] = [];
+  let migrations: string[] = [];
+  let hasAdmin = false;
+  if (isPostgresReady) {
+    try {
+      const tableRows = await queryPostgres<{ table_name: string }>(
+        `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE' ORDER BY table_name`
+      );
+      tables = tableRows.map((r) => r.table_name);
+
+      if (tables.includes('schema_migrations')) {
+        const migRows = await queryPostgres<{ filename: string }>(
+          `SELECT filename FROM schema_migrations ORDER BY id ASC`
+        );
+        migrations = migRows.map((r) => r.filename);
+      }
+
+      if (tables.includes('users')) {
+        const adminRes = await queryPostgres<{ count: string }>(
+          `SELECT count(*) as count FROM users WHERE role IN ('admin', 'super_admin')`
+        );
+        hasAdmin = parseInt(adminRes[0]?.count || '0', 10) > 0;
+      }
+    } catch {
+      // Non-blocking metadata query
+    }
+  }
+
   const responsePayload = {
     status: isReady ? 'ready' : 'not_ready',
     service: 'astrowave-api',
@@ -290,6 +319,13 @@ app.get('/ready', async (req: Request, res: Response) => {
       mongo: dbHealth.mongo ? 'up' : 'down',
       redis: redisHealthy ? 'up' : 'not_configured_or_down',
       config: 'valid',
+    },
+    database: {
+      tablesCount: tables.length,
+      tables,
+      migrationsCount: migrations.length,
+      migrations,
+      hasAdmin,
     },
     timestamp: new Date().toISOString(),
   };

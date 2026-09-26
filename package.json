@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc && cp src/migrations/*.sql dist/migrations/ 2>/dev/null || true",
+    "prestart": "node dist/migrations/migrate.js && node dist/scripts/create-admin.js",
     "start": "node dist/server.js",
     "migrate": "tsx src/migrations/migrate.ts",
     "migrate:rollback": "tsx src/migrations/rollback.ts",
