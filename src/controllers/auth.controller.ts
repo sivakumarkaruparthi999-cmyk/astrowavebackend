@@ -117,13 +117,26 @@ export class AuthController {
         return;
       }
 
+      const normalizedEmail = email ? String(email).trim().toLowerCase() : null;
+      const normalizedPhone = phone ? String(phone).trim() : null;
+
       const user = await queryPostgresSingle(
         `SELECT u.id, u.email, u.phone, u.password_hash, u.role, u.status, p.full_name, p.avatar_url
          FROM users u
          LEFT JOIN profiles p ON u.id = p.id
-         WHERE (u.email IS NOT NULL AND u.email = $1) OR (u.phone IS NOT NULL AND u.phone = $2)`,
-        [email || null, phone || null]
+         WHERE (u.email IS NOT NULL AND LOWER(TRIM(u.email)) = $1) OR (u.phone IS NOT NULL AND u.phone = $2)`,
+        [normalizedEmail, normalizedPhone]
       );
+
+      // Safe non-secret diagnostic logging (OPS-01)
+      console.log('[Auth Diagnostic]', {
+        emailSubmitted: normalizedEmail,
+        adminFound: Boolean(user),
+        userRole: user?.role || null,
+        userActive: user?.status === 'active',
+        passwordHashPresent: Boolean(user?.password_hash),
+        adminEmailConfigured: Boolean(process.env.ADMIN_EMAIL || process.env.INITIAL_ADMIN_EMAIL),
+      });
 
       if (!user) {
         res.status(401).json({ success: false, error: 'Invalid credentials' });
@@ -135,8 +148,9 @@ export class AuthController {
         return;
       }
 
-      const isMatch = await comparePassword(password, user.password_hash);
+      const isMatch = user.password_hash ? await comparePassword(password, user.password_hash) : false;
       if (!isMatch) {
+        console.warn(`[Auth Diagnostic] Password mismatch for: ${normalizedEmail}`);
         res.status(401).json({ success: false, error: 'Invalid credentials' });
         return;
       }

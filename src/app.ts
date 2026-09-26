@@ -284,6 +284,7 @@ app.get('/ready', async (req: Request, res: Response) => {
   let tables: string[] = [];
   let migrations: string[] = [];
   let hasAdmin = false;
+  let adminAccounts: Array<{ email: string; role: string; status: string; hasPassword: boolean; created_at: string; updated_at: string }> = [];
   if (isPostgresReady) {
     try {
       const tableRows = await queryPostgres<{ table_name: string }>(
@@ -299,10 +300,21 @@ app.get('/ready', async (req: Request, res: Response) => {
       }
 
       if (tables.includes('users')) {
-        const adminRes = await queryPostgres<{ count: string }>(
-          `SELECT count(*) as count FROM users WHERE role IN ('admin', 'super_admin')`
+        const adminUsers = await queryPostgres<{
+          email: string;
+          role: string;
+          status: string;
+          hasPassword: boolean;
+          created_at: string;
+          updated_at: string;
+        }>(
+          `SELECT email, role, status, (password_hash IS NOT NULL AND password_hash != '') as "hasPassword", created_at, updated_at
+           FROM users
+           WHERE role IN ('admin', 'super_admin')
+           ORDER BY created_at ASC`
         );
-        hasAdmin = parseInt(adminRes[0]?.count || '0', 10) > 0;
+        adminAccounts = adminUsers;
+        hasAdmin = adminAccounts.length > 0;
       }
     } catch {
       // Non-blocking metadata query
@@ -326,6 +338,12 @@ app.get('/ready', async (req: Request, res: Response) => {
       migrationsCount: migrations.length,
       migrations,
       hasAdmin,
+    },
+    adminDiagnostics: {
+      adminEmailConfigured: Boolean(process.env.ADMIN_EMAIL || process.env.INITIAL_ADMIN_EMAIL),
+      configuredAdminEmail: process.env.ADMIN_EMAIL || process.env.INITIAL_ADMIN_EMAIL || null,
+      adminPasswordConfigured: Boolean(process.env.ADMIN_PASSWORD || process.env.INITIAL_ADMIN_PASSWORD),
+      adminAccounts,
     },
     firebase: {
       projectId: process.env.FIREBASE_PROJECT_ID || 'not_set',

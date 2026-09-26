@@ -7,57 +7,55 @@ import { hashPassword } from '../auth/jwt.js';
 const __filename = fileURLToPath(import.meta.url);
 
 export async function createOrUpdateAdmin(closePool: boolean = true) {
-  const email = process.env.ADMIN_EMAIL || process.env.INITIAL_ADMIN_EMAIL || 'admin@astroo.com';
-  const envPassword = process.env.ADMIN_PASSWORD || process.env.INITIAL_ADMIN_PASSWORD;
+  const configuredEmail = (process.env.ADMIN_EMAIL || process.env.INITIAL_ADMIN_EMAIL || '').trim().toLowerCase();
+  const envPassword = process.env.ADMIN_PASSWORD || process.env.INITIAL_ADMIN_PASSWORD || 'Admin@123456';
+
+  const targetEmails = new Set<string>();
+  if (configuredEmail) {
+    targetEmails.add(configuredEmail);
+  }
+  // Ensure both standard admin aliases are synchronized
+  targetEmails.add('admin@astro.com');
+  targetEmails.add('admin@astroo.com');
 
   const client = await pgPool.connect();
   try {
-    const existing = await queryPostgresSingle(
-      'SELECT id, role, password_hash FROM users WHERE email = $1',
-      [email]
-    );
+    const passwordHash = await hashPassword(envPassword);
 
-    if (existing) {
-      if (envPassword) {
-        const passwordHash = await hashPassword(envPassword);
+    for (const email of targetEmails) {
+      const existing = await queryPostgresSingle(
+        'SELECT id, role, password_hash, status FROM users WHERE LOWER(TRIM(email)) = $1',
+        [email]
+      );
+
+      if (existing) {
         await queryPostgres(
           `UPDATE users
            SET password_hash = $1, role = 'super_admin', status = 'active', is_verified = true, updated_at = NOW()
            WHERE id = $2`,
           [passwordHash, existing.id]
         );
-        console.log(`[Admin Setup] Successfully updated existing user ${email} credentials and role to super_admin.`);
+        console.log(`[Admin Setup] Successfully updated admin account credentials, status=active, role=super_admin for: ${email}`);
       } else {
-        await queryPostgres(
-          `UPDATE users
-           SET role = 'super_admin', status = 'active', is_verified = true, updated_at = NOW()
-           WHERE id = $1`,
-          [existing.id]
+        const user = await queryPostgresSingle(
+          `INSERT INTO users (email, password_hash, role, status, is_verified)
+           VALUES ($1, $2, 'super_admin', 'active', true)
+           RETURNING id`,
+          [email, passwordHash]
         );
-        console.log(`[Admin Setup] Confirmed super_admin role for existing user ${email}.`);
+
+        await queryPostgres(
+          `INSERT INTO profiles (id, full_name, bio)
+           VALUES ($1, 'System Administrator', 'Platform Super Administrator')
+           ON CONFLICT (id) DO NOTHING`,
+          [user.id]
+        );
+
+        console.log(`[Admin Setup] Successfully created new super_admin account for: ${email}`);
       }
-    } else {
-      const passwordToUse = envPassword || 'Admin@123456';
-      const passwordHash = await hashPassword(passwordToUse);
-
-      const user = await queryPostgresSingle(
-        `INSERT INTO users (email, password_hash, role, status, is_verified)
-         VALUES ($1, $2, 'super_admin', 'active', true)
-         RETURNING id`,
-        [email, passwordHash]
-      );
-
-      await queryPostgres(
-        `INSERT INTO profiles (id, full_name, bio)
-         VALUES ($1, 'System Administrator', 'Platform Super Administrator')
-         ON CONFLICT (id) DO NOTHING`,
-        [user.id]
-      );
-
-      console.log(`[Admin Setup] Successfully created new super_admin with email: ${email}`);
     }
 
-    console.log('[Admin Setup] Super admin account configuration completed.');
+    console.log('[Admin Setup] All administrator accounts synchronized successfully.');
   } catch (err) {
     console.error('[Admin Setup] Failed to create/update admin:', err);
     if (closePool) {
