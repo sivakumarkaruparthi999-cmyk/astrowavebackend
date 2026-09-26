@@ -98,8 +98,14 @@ const configuredOrigins = (process.env.CORS_ORIGINS || process.env.CORS_ALLOWED_
   .filter(Boolean);
 
 const isProduction = process.env.NODE_ENV === 'production';
+// Always permit local admin dev origins and merge with any configured env origins
+const localAdminOrigins = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+];
+
 const ALLOWED_ORIGINS: string[] = isProduction
-  ? configuredOrigins
+  ? [...localAdminOrigins, ...configuredOrigins]
   : [
       'http://localhost:3000',
       'http://127.0.0.1:3000',
