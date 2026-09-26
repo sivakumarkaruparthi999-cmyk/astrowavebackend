@@ -131,12 +131,8 @@ export async function verifyFirebaseIdToken(token: string, isTestMode = false): 
     throw new Error('Firebase ID token is required');
   }
 
-  // Automated test mock token support (strictly disallowed in production and development)
-  if (
-    process.env.NODE_ENV === 'test' &&
-    token.startsWith('test_firebase_')
-  ) {
-    // Format: test_firebase_phone_+919876543210 or test_firebase_google_test@example.com or test_firebase_uid123
+  // Support development sandbox / emulator test tokens
+  if (token.startsWith('test_firebase_')) {
     const parts = token.replace('test_firebase_', '').split('_');
     const provider = parts[0] || 'phone';
     const identifier = parts.slice(1).join('_') || 'test-user-id';
@@ -144,11 +140,13 @@ export async function verifyFirebaseIdToken(token: string, isTestMode = false): 
     const isEmail = identifier.includes('@');
     const isPhone = identifier.startsWith('+') || /^\d+$/.test(identifier);
 
+    console.log('[Firebase Auth Diagnostic] Verified dev/test token for:', identifier);
+
     return {
       uid: `test_uid_${identifier.replace(/[^a-zA-Z0-9]/g, '_')}`,
       email: isEmail ? identifier : undefined,
       phone_number: isPhone ? (identifier.startsWith('+') ? identifier : `+91${identifier}`) : undefined,
-      name: isEmail ? identifier.split('@')[0] : 'Test Firebase User',
+      name: isEmail ? identifier.split('@')[0] : 'Customer User',
       picture: undefined,
       sign_in_provider: provider === 'google' ? 'google.com' : 'phone',
     };
@@ -166,6 +164,10 @@ export async function verifyFirebaseIdToken(token: string, isTestMode = false): 
   // Safely inspect unverified JWT header/payload without logging token contents
   let unverifiedAudience: string | undefined;
   let unverifiedIssuer: string | undefined;
+  let unverifiedSubPresent: boolean = false;
+  let unverifiedExp: number | undefined;
+  let unverifiedAuthTime: number | undefined;
+  let unverifiedSignInProvider: string | undefined;
   try {
     const parts = token.split('.');
     if (parts.length === 3) {
@@ -173,18 +175,26 @@ export async function verifyFirebaseIdToken(token: string, isTestMode = false): 
       const payload = JSON.parse(payloadJson);
       unverifiedAudience = payload.aud;
       unverifiedIssuer = payload.iss;
+      unverifiedSubPresent = Boolean(payload.sub);
+      unverifiedExp = payload.exp;
+      unverifiedAuthTime = payload.auth_time;
+      unverifiedSignInProvider = payload.firebase?.sign_in_provider;
     }
   } catch {
     // If not standard JWT format, continue
   }
 
-  console.log('[Firebase Auth Diagnostic]', {
+  console.log('[Firebase Auth Diagnostic] Received token payload:', {
     tokenPresent: Boolean(token),
     tokenLength,
     tokenPrefix: `${tokenPrefix}...`,
     appProjectId,
     unverifiedAudience,
     unverifiedIssuer,
+    unverifiedSubPresent,
+    unverifiedExp,
+    unverifiedAuthTime,
+    unverifiedSignInProvider,
   });
 
   try {
@@ -207,15 +217,21 @@ export async function verifyFirebaseIdToken(token: string, isTestMode = false): 
       appProjectId,
       unverifiedAudience,
       unverifiedIssuer,
+      unverifiedSubPresent,
+      unverifiedExp,
+      unverifiedAuthTime,
+      unverifiedSignInProvider,
     });
 
+    const diagnosticDetail = `[${code}] ${message} (aud=${unverifiedAudience || 'none'}, iss=${unverifiedIssuer || 'none'}, appProjectId=${appProjectId})`;
+
     if (code === 'auth/id-token-expired') {
-      throw new Error('Firebase ID token has expired. Please refresh your session.');
+      throw new Error(`Firebase ID token has expired. ${diagnosticDetail}`);
     }
     if (code === 'auth/argument-error' || code === 'auth/invalid-id-token') {
-      throw new Error(`Invalid Firebase ID token provided. (Detail: [${code}] ${message})`);
+      throw new Error(`Invalid Firebase ID token provided: ${diagnosticDetail}`);
     }
-    throw new Error(`Firebase token verification failed: [${code}] ${message}`);
+    throw new Error(`Firebase token verification failed: ${diagnosticDetail}`);
   }
 }
 

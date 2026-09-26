@@ -327,6 +327,12 @@ app.get('/ready', async (req: Request, res: Response) => {
       migrations,
       hasAdmin,
     },
+    firebase: {
+      projectId: process.env.FIREBASE_PROJECT_ID || 'not_set',
+      clientEmailDomain: process.env.FIREBASE_CLIENT_EMAIL ? process.env.FIREBASE_CLIENT_EMAIL.split('@')[1] : null,
+      clientEmailPrefix: process.env.FIREBASE_CLIENT_EMAIL ? process.env.FIREBASE_CLIENT_EMAIL.split('@')[0] : null,
+      privateKeyConfigured: Boolean(process.env.FIREBASE_PRIVATE_KEY),
+    },
     timestamp: new Date().toISOString(),
   };
 
