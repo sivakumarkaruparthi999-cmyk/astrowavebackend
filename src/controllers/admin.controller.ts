@@ -1,5 +1,5 @@
 import { Response } from 'express';
-import { queryPostgres, queryPostgresSingle } from '../config/db.js';
+import { pgPool, queryPostgres, queryPostgresSingle } from '../config/db.js';
 import { AuthenticatedRequest } from '../middleware/auth.middleware.js';
 import { disconnectUserSockets } from '../websocket/socket.server.js';
 
@@ -202,6 +202,91 @@ export class AdminController {
           gross_revenue: Number(consults?.[0]?.consult_gross || 0),
         },
       });
+    } catch (err) {
+      res.status(500).json({ success: false, error: (err as Error).message });
+    }
+  }
+
+  static async markPayoutDone(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const adminId = req.user?.userId;
+      const { amount, bankReference, notes } = req.body;
+
+      const client = await pgPool.connect();
+      try {
+        await client.query('BEGIN');
+
+        // Check or create provider_earnings
+        const earningsRes = await client.query(
+          'SELECT * FROM provider_earnings WHERE provider_id = $1 FOR UPDATE',
+          [id]
+        );
+
+        let currentEarnings = earningsRes.rows[0];
+        if (!currentEarnings) {
+          const consultsSum = await client.query(
+            "SELECT COALESCE(SUM(astrologer_earnings), 0) AS total FROM consultations WHERE astrologer_id = $1 AND state = 'ENDED'",
+            [id]
+          );
+          const earned = Number(consultsSum.rows[0]?.total || 0);
+          const insertRes = await client.query(
+            `INSERT INTO provider_earnings (provider_id, total_earned, available_balance, withdrawn_amount, pending_payout_amount)
+             VALUES ($1, $2, $2, 0, 0)
+             RETURNING *`,
+            [id, earned]
+          );
+          currentEarnings = insertRes.rows[0];
+        }
+
+        const currentAvailable = Number(currentEarnings.available_balance || 0);
+        const payoutAmount = amount && Number(amount) > 0 ? Number(amount) : currentAvailable;
+
+        if (payoutAmount <= 0) {
+          await client.query('ROLLBACK');
+          res.status(400).json({ success: false, error: 'No balance available to payout' });
+          return;
+        }
+
+        const actualDeduct = Math.min(payoutAmount, currentAvailable);
+
+        const updateRes = await client.query(
+          `UPDATE provider_earnings
+           SET available_balance = GREATEST(0, available_balance - $1),
+               withdrawn_amount = withdrawn_amount + $1,
+               updated_at = NOW()
+           WHERE provider_id = $2
+           RETURNING *`,
+          [actualDeduct, id]
+        );
+
+        // Record in payout_requests
+        await client.query(
+          `INSERT INTO payout_requests (provider_id, amount, status, notes, bank_reference, processed_at)
+           VALUES ($1, $2, 'COMPLETED', $3, $4, NOW())`,
+          [id, actualDeduct, notes || 'Admin marked payout as done', bankReference || `ADMIN_PAYOUT_${Date.now()}`]
+        );
+
+        // Audit log
+        await client.query(
+          `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details)
+           VALUES ($1, 'admin_payout_done', 'provider_earnings', $2, $3)`,
+          [adminId, id, JSON.stringify({ amount: actualDeduct, bankReference, previousBalance: currentAvailable })]
+        );
+
+        await client.query('COMMIT');
+
+        res.status(200).json({
+          success: true,
+          message: `Payout of ₹${actualDeduct.toFixed(2)} marked as done successfully`,
+          data: updateRes.rows[0],
+        });
+      } catch (txErr) {
+        await client.query('ROLLBACK').catch(() => {});
+        throw txErr;
+      } finally {
+        client.release();
+      }
     } catch (err) {
       res.status(500).json({ success: false, error: (err as Error).message });
     }
