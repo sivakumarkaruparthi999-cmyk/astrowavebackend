@@ -50,7 +50,7 @@ export class BillingService {
         for (const cons of activeConsultations) {
           try {
             const tickResult = await queryPostgresSingle(
-              'SELECT * FROM bill_consultation_minute_tick_atomic($1, 20.00)',
+              'SELECT * FROM bill_consultation_minute_tick_atomic($1, 0.00)',
               [cons.id]
             );
 
@@ -302,7 +302,7 @@ export class BillingService {
 
     // Execute atomic PostgreSQL reconciled billing procedure
     const billingRes = await queryPostgresSingle(
-      'SELECT settle_consultation_billing_atomic($1, $2, 20.00, $3) AS id',
+      'SELECT settle_consultation_billing_atomic($1, $2, 0.00, $3) AS id',
       [consultationId, reconciledSeconds, idempotencyKey || null]
     );
 
