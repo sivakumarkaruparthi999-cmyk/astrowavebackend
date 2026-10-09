@@ -18,6 +18,7 @@ router.get('/stats', AdminController.getDashboardStats);
 router.get('/users', validatePagination, AdminController.listUsers);
 router.put('/users/:id', validateUuidParam('id'), validateBody(adminUpdateUserSchema), AdminController.updateUserStatus);
 router.get('/astrologers', validatePagination, AdminController.listAstrologers);
+router.get('/astrologers/:id/earnings', validateUuidParam('id'), AdminController.getAstrologerEarnings);
 router.put('/astrologers/:id/verify', validateUuidParam('id'), validateBody(adminVerifyAstrologerSchema), AdminController.verifyAstrologer);
 router.get('/audit-logs', validatePagination, AdminController.listAuditLogs);
 router.post('/notifications/broadcast', AdminController.broadcastNotification);

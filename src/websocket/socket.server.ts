@@ -84,13 +84,16 @@ export function initSocketServer(io: SocketIOServer) {
         }
       }
 
-      // If astrologer, update online status in PostgreSQL
+      // If astrologer, respect their database online status rather than forcing online
       if (userRole === 'astrologer') {
-        queryPostgres(
-          'UPDATE astrologer_profiles SET is_online = true, updated_at = NOW() WHERE id = $1',
+        queryPostgresSingle(
+          'SELECT is_online FROM astrologer_profiles WHERE id = $1',
           [userId]
-        ).catch((e) => console.error('Error updating astrologer online status:', e));
-        io.emit('astrologer_presence_changed', { astrologerId: userId, isOnline: true });
+        ).then((prof) => {
+          if (prof?.is_online) {
+            io.emit('astrologer_presence_changed', { astrologerId: userId, isOnline: true });
+          }
+        }).catch((e) => console.error('Error checking astrologer status:', e));
       }
     } else {
       socket.join(`role_${userRole}`);
@@ -284,7 +287,7 @@ export function initSocketServer(io: SocketIOServer) {
 
       try {
         const consultation = await queryPostgresSingle(
-          'SELECT user_id, astrologer_id, state FROM consultations WHERE id = $1',
+          'SELECT user_id, astrologer_id, state, astrologer_joined_at, start_time FROM consultations WHERE id = $1',
           [consultationId]
         );
 
@@ -350,6 +353,48 @@ export function initSocketServer(io: SocketIOServer) {
 
         // Emit exactly ONE authoritative join event to room
         socket.to(room).emit('user_joined_room', joinPayload);
+
+        if (!isCustomer) {
+          // Astrologer has joined! Atomically mark consultation ACTIVE and set astrologer_joined_at!
+          const activated = await queryPostgresSingle(
+            `UPDATE consultations
+             SET state = 'ACTIVE',
+                 astrologer_joined_at = COALESCE(astrologer_joined_at, NOW()),
+                 start_time = COALESCE(start_time, NOW()),
+                 updated_at = NOW()
+             WHERE id = $1
+             RETURNING *`,
+            [consultationId]
+          );
+
+          console.log(`[Socket.IO] Astrologer joined consultation ${consultationId}. Marked ACTIVE, joined at: ${activated?.astrologer_joined_at || timestamp}`);
+
+          const startPayload = {
+            id: consultationId,
+            consultationId,
+            status: 'ACTIVE',
+            state: 'ACTIVE',
+            astrologerId: userId,
+            customerId: consultation.user_id,
+            startTime: activated?.start_time || timestamp,
+            astrologerJoinedAt: activated?.astrologer_joined_at || timestamp,
+            astrologerJoined: true,
+          };
+
+          io.to(room).emit('astrologer_joined', startPayload);
+          io.to(room).emit('consultation_started', startPayload);
+          io.to(`user_${consultation.user_id}`).emit('astrologer_joined', startPayload);
+          io.to(`user_${consultation.user_id}`).emit('consultation_started', startPayload);
+        } else {
+          // Customer joined: notify client of current astrologer presence status
+          socket.emit('consultation_status', {
+            consultationId,
+            state: consultation.state,
+            astrologerJoined: Boolean(consultation.astrologer_joined_at),
+            astrologerJoinedAt: consultation.astrologer_joined_at,
+            startTime: consultation.start_time,
+          });
+        }
       } catch (err) {
         console.error('[Socket.IO] Error in join_consultation:', err);
       }
@@ -424,17 +469,27 @@ export function initSocketServer(io: SocketIOServer) {
         }
 
         // 5. Verify sender belongs to that consultation
-        const isParticipant = consultation.user_id === userId || consultation.astrologer_id === userId;
+        const isCustomer = consultation.user_id === userId;
+        const isAstrologer = consultation.astrologer_id === userId;
         const isAdmin = userRole === 'admin' || userRole === 'super_admin';
-        if (!isParticipant && !isAdmin) {
+        if (!isCustomer && !isAstrologer && !isAdmin) {
           console.warn(`[Socket.IO] send_message rejected - user ${userId} not a participant in consultation ${consultationId}`);
           if (callback) callback({ success: false, error: 'Unauthorized: Not a participant in this consultation' });
           return;
         }
 
+        const effectiveSenderRole = isCustomer ? 'customer' : (isAstrologer ? 'astrologer' : senderRole);
+
+        // Authoritative opposite participant derivation (Section 15)
+        const expectedRecipient = isCustomer ? consultation.astrologer_id : consultation.user_id;
+        const isPlaceholder = !recipientId || recipientId === 'customer_user' || recipientId === 'astrologer_user' || recipientId === 'live_chat';
+        const recipientMatches = isPlaceholder || recipientId === expectedRecipient;
+
+        // Section 2: Temporary safe debugging (OPS-02)
+        console.log(`[CHAT_AUTH_DEBUG] consultationId=${consultationId} authenticatedUserId=${userId} senderId=${senderId} recipientId=${recipientId || expectedRecipient} consultationCustomerId=${consultation.user_id} consultationAstrologerId=${consultation.astrologer_id} senderRole=${effectiveSenderRole} recipientMatches=${recipientMatches} senderMatches=${isCustomer || isAstrologer || isAdmin}`);
+
         // 6. Verify recipient belongs to that consultation
-        const expectedRecipient = consultation.user_id === userId ? consultation.astrologer_id : consultation.user_id;
-        if (recipientId && recipientId !== expectedRecipient && !isAdmin) {
+        if (!isPlaceholder && recipientId !== expectedRecipient && !isAdmin) {
           console.warn(`[Socket.IO] send_message rejected - recipient mismatch (provided: ${recipientId}, expected: ${expectedRecipient})`);
           if (callback) callback({ success: false, error: 'Forbidden: Recipient does not belong to this consultation' });
           return;
@@ -450,7 +505,8 @@ export function initSocketServer(io: SocketIOServer) {
           conversationId,
           consultationId,
           senderId,
-          senderRole,
+          senderRole: effectiveSenderRole,
+          sender: effectiveSenderRole,
           recipientId: effectiveRecipientId,
           messageType,
           content,
@@ -466,6 +522,8 @@ export function initSocketServer(io: SocketIOServer) {
           ...messagePayload,
           _id: messageId,
           id: messageId,
+          senderRole: effectiveSenderRole,
+          sender: effectiveSenderRole,
           text: content,
           consultationId,
           consultation_id: consultationId,
@@ -484,6 +542,8 @@ export function initSocketServer(io: SocketIOServer) {
               ...obj,
               id: finalId,
               _id: finalId,
+              senderRole: effectiveSenderRole,
+              sender: effectiveSenderRole,
               text: obj.content || content,
               content: obj.content || content,
               consultationId: obj.consultationId || consultationId,

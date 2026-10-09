@@ -37,9 +37,10 @@ async function bootstrap() {
   // Create HTTP and WebSocket server
   const server = http.createServer(app);
 
+  const rawOrigins = process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGINS;
   const corsOrigin =
-    process.env.NODE_ENV === 'production' && process.env.CORS_ORIGINS
-      ? process.env.CORS_ORIGINS.split(',').map((o) => o.trim()).filter(Boolean)
+    process.env.NODE_ENV === 'production' && rawOrigins
+      ? rawOrigins.split(',').map((o) => o.trim()).filter(Boolean)
       : '*';
 
   const io = new SocketIOServer(server, {

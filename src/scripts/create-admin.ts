@@ -29,13 +29,17 @@ export async function createOrUpdateAdmin(closePool: boolean = true) {
       );
 
       if (existing) {
-        await queryPostgres(
-          `UPDATE users
-           SET password_hash = $1, role = 'super_admin', status = 'active', is_verified = true, updated_at = NOW()
-           WHERE id = $2`,
-          [passwordHash, existing.id]
-        );
-        console.log(`[Admin Setup] Successfully updated admin account credentials, status=active, role=super_admin for: ${email}`);
+        if (process.env.FORCE_RESET_ADMIN === 'true') {
+          await queryPostgres(
+            `UPDATE users
+             SET password_hash = $1, role = 'super_admin', status = 'active', is_verified = true, updated_at = NOW()
+             WHERE id = $2`,
+            [passwordHash, existing.id]
+          );
+          console.log(`[Admin Setup] FORCE_RESET_ADMIN=true: Successfully updated admin credentials for: ${email}`);
+        } else {
+          console.log(`[Admin Setup] Admin account already exists for ${email} (status=${existing.status}, role=${existing.role}). Preserving existing credentials.`);
+        }
       } else {
         const user = await queryPostgresSingle(
           `INSERT INTO users (email, password_hash, role, status, is_verified)

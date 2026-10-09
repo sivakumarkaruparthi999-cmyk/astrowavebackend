@@ -5,6 +5,7 @@ import { ChatConversation } from '../models/mongo/ChatConversation.js';
 import fs from 'fs';
 import { StorageService, validateFileMagicBytes } from '../services/storage.service.js';
 import { queryPostgresSingle } from '../config/db.js';
+import { getSocketServer } from '../websocket/socket.server.js';
 import mongoose from 'mongoose';
 
 // Authoritative Consultation-Isolated In-Memory Chat Store (Key: consultationId)
@@ -63,6 +64,13 @@ export class ChatController {
           messages = rawMessages.map((doc) => {
             const obj = doc.toObject ? doc.toObject() : doc;
             const msgId = (obj._id || doc._id || '').toString();
+            const effectiveRole =
+              obj.senderId === consultation.user_id
+                ? 'customer'
+                : obj.senderId === consultation.astrologer_id
+                ? 'astrologer'
+                : obj.senderRole || obj.sender || 'customer';
+
             return {
               ...obj,
               id: msgId,
@@ -73,6 +81,8 @@ export class ChatController {
               consultation_id: obj.consultationId || obj.conversationId,
               senderId: obj.senderId,
               sender_id: obj.senderId,
+              senderRole: effectiveRole,
+              sender: effectiveRole,
               createdAt: obj.createdAt,
               created_at: obj.createdAt,
             };
@@ -85,7 +95,19 @@ export class ChatController {
       // If MongoDB is offline or returned 0 messages, retrieve from consultation-isolated in-memory store
       if (messages.length === 0) {
         const memList = inMemoryChatStore.get(consultationId) || [];
-        messages = memList.slice(-Number(limit));
+        messages = memList.slice(-Number(limit)).map((m: any) => {
+          const effectiveRole =
+            m.senderId === consultation.user_id
+              ? 'customer'
+              : m.senderId === consultation.astrologer_id
+              ? 'astrologer'
+              : m.senderRole || m.sender || 'customer';
+          return {
+            ...m,
+            senderRole: effectiveRole,
+            sender: effectiveRole,
+          };
+        });
       }
 
       res.status(200).json({ success: true, data: messages || [] });
@@ -126,14 +148,28 @@ export class ChatController {
         return;
       }
 
-      const targetRecipientId = isCustomer ? consultation.astrologer_id : consultation.user_id;
+      const expectedRecipient = isCustomer ? consultation.astrologer_id : consultation.user_id;
+      const isPlaceholder = !recipientId || recipientId === 'customer_user' || recipientId === 'astrologer_user' || recipientId === 'live_chat';
+      const recipientMatches = isPlaceholder || recipientId === expectedRecipient;
+
+      console.log(`[CHAT_AUTH_DEBUG] consultationId=${consultationId} authenticatedUserId=${userId} senderId=${userId} recipientId=${recipientId || expectedRecipient} consultationCustomerId=${consultation.user_id} consultationAstrologerId=${consultation.astrologer_id} senderRole=${userRole} recipientMatches=${recipientMatches} senderMatches=${isCustomer || isAstrologer || isAdmin}`);
+
+      if (!isPlaceholder && recipientId !== expectedRecipient && !isAdmin) {
+        res.status(403).json({ success: false, error: 'Forbidden: Recipient does not belong to this consultation' });
+        return;
+      }
+
+      const targetRecipientId = expectedRecipient;
+
+      const effectiveSenderRole = isCustomer ? 'customer' : (isAstrologer ? 'astrologer' : userRole);
 
       const messageId = id || _id || `${Date.now()}-${Math.random().toString(36).substring(7)}`;
       const msgData: any = {
         conversationId: consultationId,
         consultationId,
         senderId: userId,
-        senderRole: userRole,
+        senderRole: effectiveSenderRole,
+        sender: effectiveSenderRole,
         recipientId: targetRecipientId,
         messageType,
         content: effectiveContent,
@@ -190,6 +226,19 @@ export class ChatController {
       }
       if (!list.some(m => m.id === saved.id)) {
         list.push(saved);
+      }
+
+      // Authoritative realtime WebSocket broadcast to room and recipient
+      const io = getSocketServer();
+      if (io) {
+        const room = `consultation_${consultationId}`;
+        console.log(`[HTTP Chat] Emitting message ${saved.id} to room ${room}`);
+        io.to(room).emit('new_message', saved);
+        io.to(room).emit('chat_message', saved);
+        io.to(room).emit('receive_message', saved);
+        if (targetRecipientId) {
+          io.to(`user_${targetRecipientId}`).emit('incoming_chat', saved);
+        }
       }
 
       res.status(201).json({ success: true, data: saved });

@@ -45,6 +45,7 @@ const envSchema = z.object({
   // Observability & Security
   SENTRY_DSN: z.string().optional(),
   CORS_ORIGINS: z.string().optional(),
+  ALLOWED_ORIGINS: z.string().optional(),
   STORAGE_PATH: z.string().optional(),
 });
 

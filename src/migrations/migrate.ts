@@ -37,6 +37,7 @@ export async function runMigrations(closePool: boolean = true) {
       '009_consolidate_payment_columns.sql',
       '010_reconcile_wallet_ledger.sql',
       'catalog_seed.sql',
+      '011_astrologer_joined_tracking.sql',
     ];
 
     let appliedCount = 0;

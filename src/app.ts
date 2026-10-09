@@ -92,23 +92,26 @@ app.use((_req: Request, res: Response, next: NextFunction) => {
 });
 
 // Whitelisted origins for CORS
-const configuredOrigins = (process.env.CORS_ORIGINS || process.env.CORS_ALLOWED_ORIGINS || '')
+const configuredOrigins = (process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGINS || process.env.CORS_ALLOWED_ORIGINS || '')
   .split(',')
   .map((o) => o.trim())
   .filter(Boolean);
 
 const isProduction = process.env.NODE_ENV === 'production';
-// Always permit local admin dev origins and merge with any configured env origins
-const localAdminOrigins = [
+// Always permit local web origins (admin: 3000, customer: 3001, astrologer: 3002) and merge with configured env origins
+const localWebOrigins = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
+  'http://localhost:3001',
+  'http://127.0.0.1:3001',
+  'http://localhost:3002',
+  'http://127.0.0.1:3002',
 ];
 
 const ALLOWED_ORIGINS: string[] = isProduction
-  ? [...localAdminOrigins, ...configuredOrigins]
+  ? [...localWebOrigins, ...configuredOrigins]
   : [
-      'http://localhost:3000',
-      'http://127.0.0.1:3000',
+      ...localWebOrigins,
       'http://localhost:5001',
       'http://127.0.0.1:5001',
       'http://10.0.2.2:5001',

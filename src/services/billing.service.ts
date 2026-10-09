@@ -35,9 +35,9 @@ export class BillingService {
 
       try {
         const activeConsultations = await queryPostgres(
-          `SELECT id, user_id, astrologer_id, rate_per_minute, start_time, last_billed_minute, total_amount, type
+          `SELECT id, user_id, astrologer_id, rate_per_minute, start_time, astrologer_joined_at, last_billed_minute, total_amount, type
            FROM consultations
-           WHERE state = 'ACTIVE' AND start_time IS NOT NULL`
+           WHERE state = 'ACTIVE' AND astrologer_joined_at IS NOT NULL`
         );
 
         if (!activeConsultations || activeConsultations.length === 0) {
@@ -218,31 +218,36 @@ export class BillingService {
       // MongoDB lookup error shouldn't block billing
     }
 
-    // 2. Check PostgreSQL start_time (authoritative wall-clock timer)
-    if (consultation.start_time) {
+    // 2. Check PostgreSQL astrologer_joined_at (strictly when astrologer joined)
+    if (consultation.astrologer_joined_at) {
       isConnectedCall = true;
-      const wallClockSeconds = Math.max(0, Math.floor((Date.now() - new Date(consultation.start_time).getTime()) / 1000));
+      const wallClockSeconds = Math.max(0, Math.floor((Date.now() - new Date(consultation.astrologer_joined_at).getTime()) / 1000));
       reconciledSeconds = Math.max(reconciledSeconds, wallClockSeconds);
+    } else {
+      // Astrologer NEVER joined the consultation: amount should NOT be deducted
+      isConnectedCall = false;
+      reconciledSeconds = 0;
     }
 
-    // 3. Check client-reported duration
-    if (durationSeconds !== undefined && durationSeconds > 0) {
+    // 3. Check client-reported duration only if astrologer actually joined
+    if (consultation.astrologer_joined_at && durationSeconds !== undefined && durationSeconds > 0) {
       isConnectedCall = true;
       reconciledSeconds = Math.max(reconciledSeconds, durationSeconds);
-    } else if (durationSeconds === 0 && !consultation.start_time) {
-      // Explicit 0 duration reported before connection
-      reconciledSeconds = 0;
-    } else if (!isConnectedCall && consultation.type === 'chat') {
-      // Default minimum for completed chat
+    } else if (durationSeconds === 0 || !consultation.astrologer_joined_at) {
+      // Explicit 0 duration or astrologer never joined
+      if (!consultation.astrologer_joined_at) {
+        reconciledSeconds = 0;
+        isConnectedCall = false;
+      }
+    } else if (!isConnectedCall && consultation.type === 'chat' && consultation.astrologer_joined_at) {
+      // Completed chat with astrologer joined
       reconciledSeconds = 60;
       isConnectedCall = true;
     }
 
-    // Cap reported duration strictly against actual elapsed wall-clock time since start
-    const startTime = consultation.start_time ? new Date(consultation.start_time).getTime() : Date.now();
-    const createdAtTime = consultation.created_at ? new Date(consultation.created_at).getTime() : Date.now();
-    const earliestTime = Math.min(startTime, createdAtTime);
-    const actualElapsedSeconds = Math.max(0, Math.floor((Date.now() - earliestTime) / 1000) + 60); // 60s grace buffer
+    // Cap reported duration strictly against actual elapsed wall-clock time since astrologer joined
+    const startTime = consultation.astrologer_joined_at ? new Date(consultation.astrologer_joined_at).getTime() : Date.now();
+    const actualElapsedSeconds = Math.max(0, Math.floor((Date.now() - startTime) / 1000) + 60); // 60s grace buffer
     const maxPossibleSeconds = Math.min(7200, actualElapsedSeconds);
     if (reconciledSeconds > maxPossibleSeconds) {
       reconciledSeconds = maxPossibleSeconds;

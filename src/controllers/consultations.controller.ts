@@ -49,6 +49,23 @@ export class ConsultationsController {
         return;
       }
 
+      // Check if user already has an existing active or requested consultation with this astrologer
+      const existing = await queryPostgresSingle(
+        `SELECT * FROM consultations
+         WHERE user_id = $1 AND astrologer_id = $2 AND type = $3 AND state IN ('REQUESTED', 'ACCEPTED', 'ACTIVE')
+         ORDER BY created_at DESC LIMIT 1`,
+        [userId, astrologerId, type]
+      );
+
+      if (existing) {
+        res.status(200).json({
+          success: true,
+          message: 'Existing ongoing or requested consultation resumed',
+          data: existing,
+        });
+        return;
+      }
+
       const consultation = await queryPostgresSingle(
         `INSERT INTO consultations (user_id, astrologer_id, type, state, rate_per_minute)
          VALUES ($1, $2, $3, 'REQUESTED', $4)
@@ -78,6 +95,10 @@ export class ConsultationsController {
           id: consultation.id,
           consultationId: consultation.id,
           userId: userId,
+          customerId: userId,
+          senderId: userId,
+          user_id: userId,
+          customer_id: userId,
           customerName: customerName,
           astrologerId: astrologerId,
           type: type,
@@ -107,7 +128,10 @@ export class ConsultationsController {
 
       const consultation = await queryPostgresSingle(
         `UPDATE consultations
-         SET state = 'ACTIVE', start_time = COALESCE(start_time, NOW()), updated_at = NOW()
+         SET state = 'ACTIVE',
+             astrologer_joined_at = COALESCE(astrologer_joined_at, NOW()),
+             start_time = COALESCE(start_time, NOW()),
+             updated_at = NOW()
          WHERE id = $1 AND astrologer_id = $2 AND state IN ('REQUESTED', 'ACCEPTED')
          RETURNING *`,
         [id, astrologerId]

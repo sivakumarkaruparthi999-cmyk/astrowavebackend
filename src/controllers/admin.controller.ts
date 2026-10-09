@@ -149,13 +149,59 @@ export class AdminController {
         SELECT u.id, u.email, u.phone, u.status, ap.display_name, ap.experience_years,
                ap.hourly_rate, ap.per_minute_rate, ap.is_verified, ap.verification_status,
                ap.is_online, ap.is_busy, ap.rating, ap.total_reviews, ap.total_consultations,
-               ap.languages, ap.specializations, p.avatar_url, ap.created_at
+               ap.languages, ap.specializations, p.avatar_url, ap.created_at,
+               GREATEST(
+                 COALESCE(pe.total_earned, 0),
+                 COALESCE((SELECT SUM(c.astrologer_earnings) FROM consultations c WHERE c.astrologer_id = u.id AND c.state = 'ENDED'), 0)
+               ) AS total_earnings,
+               COALESCE(pe.available_balance, 0) AS available_balance,
+               COALESCE(pe.withdrawn_amount, 0) AS withdrawn_amount,
+               COALESCE(pe.pending_payout_amount, 0) AS pending_payout_amount,
+               COALESCE((SELECT SUM(c.platform_fee) FROM consultations c WHERE c.astrologer_id = u.id AND c.state = 'ENDED'), 0) AS platform_commission,
+               COALESCE((SELECT SUM(c.total_amount) FROM consultations c WHERE c.astrologer_id = u.id AND c.state = 'ENDED'), 0) AS gross_revenue
         FROM users u
         JOIN astrologer_profiles ap ON u.id = ap.id
         LEFT JOIN profiles p ON u.id = p.id
+        LEFT JOIN provider_earnings pe ON u.id = pe.provider_id
         ORDER BY ap.is_verified ASC, ap.created_at DESC
       `);
       res.status(200).json({ success: true, data: astrologers || [] });
+    } catch (err) {
+      res.status(500).json({ success: false, error: (err as Error).message });
+    }
+  }
+
+  static async getAstrologerEarnings(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const { id } = req.params;
+      const earnings = await queryPostgresSingle(
+        'SELECT * FROM provider_earnings WHERE provider_id = $1',
+        [id]
+      );
+      const consults = await queryPostgres(
+        `SELECT COALESCE(SUM(astrologer_earnings), 0) AS consult_earnings,
+                COALESCE(SUM(platform_fee), 0) AS consult_platform_fee,
+                COALESCE(SUM(total_amount), 0) AS consult_gross
+         FROM consultations
+         WHERE astrologer_id = $1 AND state = 'ENDED'`,
+        [id]
+      );
+      const totalEarned = Math.max(
+        Number(earnings?.total_earned || 0),
+        Number(consults?.[0]?.consult_earnings || 0)
+      );
+
+      res.status(200).json({
+        success: true,
+        data: {
+          total_earnings: totalEarned,
+          available_balance: Number(earnings?.available_balance || totalEarned),
+          withdrawn_amount: Number(earnings?.withdrawn_amount || 0),
+          pending_payout_amount: Number(earnings?.pending_payout_amount || 0),
+          platform_commission: Number(consults?.[0]?.consult_platform_fee || 0),
+          gross_revenue: Number(consults?.[0]?.consult_gross || 0),
+        },
+      });
     } catch (err) {
       res.status(500).json({ success: false, error: (err as Error).message });
     }
