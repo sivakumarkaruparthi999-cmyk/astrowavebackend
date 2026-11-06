@@ -362,4 +362,62 @@ export class AdminController {
       res.status(500).json({ success: false, error: (err as Error).message });
     }
   }
+
+  static async getAdminNotifications(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      // 1. Pending Astrologer KYC requests
+      const pendingAstrologers = await queryPostgres(`
+        SELECT u.id, u.email, u.phone, ap.display_name, ap.created_at
+        FROM astrologer_profiles ap
+        JOIN users u ON u.id = ap.id
+        WHERE ap.verification_status = 'pending' OR ap.is_verified = false
+        ORDER BY ap.created_at DESC
+        LIMIT 10
+      `);
+
+      // 2. Recent system notifications from notifications table
+      const systemNotifs = await queryPostgres(`
+        SELECT n.id, n.title, n.body, n.type, n.is_read, n.created_at
+        FROM notifications n
+        WHERE n.type IN ('admin_broadcast', 'kyc_pending', 'payout_request', 'system_alert')
+           OR n.user_id = $1
+        ORDER BY n.created_at DESC
+        LIMIT 20
+      `, [req.user?.userId]);
+
+      // Map pending astrologers into rich actionable notifications
+      const kycNotifications = (pendingAstrologers || []).map((a: any) => ({
+        id: `kyc-${a.id}`,
+        title: 'New Astrologer KYC Application',
+        message: `${a.display_name || 'Astrologer'} (${a.phone || a.email || 'New'}) submitted KYC application for admin approval.`,
+        type: 'kyc',
+        entityId: a.id,
+        link: '/astrologers',
+        isRead: false,
+        createdAt: a.created_at,
+      }));
+
+      // Combine and sort by createdAt desc
+      const allNotifications = [
+        ...kycNotifications,
+        ...(systemNotifs || []).map((n: any) => ({
+          id: String(n.id),
+          title: n.title,
+          message: n.body,
+          type: n.type,
+          link: n.type === 'kyc' ? '/astrologers' : '/dashboard',
+          isRead: Boolean(n.is_read),
+          createdAt: n.created_at,
+        })),
+      ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+      res.status(200).json({
+        success: true,
+        data: allNotifications,
+        unreadCount: allNotifications.filter(n => !n.isRead).length,
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, error: (err as Error).message });
+    }
+  }
 }

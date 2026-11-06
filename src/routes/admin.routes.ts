@@ -22,6 +22,7 @@ router.get('/astrologers/:id/earnings', validateUuidParam('id'), AdminController
 router.post('/astrologers/:id/payout', validateUuidParam('id'), AdminController.markPayoutDone);
 router.put('/astrologers/:id/verify', validateUuidParam('id'), validateBody(adminVerifyAstrologerSchema), AdminController.verifyAstrologer);
 router.get('/audit-logs', validatePagination, AdminController.listAuditLogs);
+router.get('/notifications', AdminController.getAdminNotifications);
 router.post('/notifications/broadcast', AdminController.broadcastNotification);
 
 export default router;
