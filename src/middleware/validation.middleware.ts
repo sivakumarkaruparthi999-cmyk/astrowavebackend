@@ -190,6 +190,6 @@ export const adminUpdateUserSchema = z
 export const adminVerifyAstrologerSchema = z
   .object({
     isVerified: z.boolean().optional(),
-    status: z.enum(['approved', 'rejected', 'pending']).optional(),
-  })
-  .strict();
+    status: z.enum(['approved', 'rejected', 'pending', 'suspended']).optional(),
+    reason: z.string().optional(),
+  });
