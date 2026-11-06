@@ -55,13 +55,17 @@ BEGIN
         RETURN;
     END IF;
 
-    -- CRITICAL BUSINESS RULE: Only ACTIVE consultations where astrologer has actually joined are billable!
-    IF v_consultation.state != 'ACTIVE' OR v_consultation.astrologer_joined_at IS NULL THEN
+    v_effective_start := COALESCE(v_consultation.astrologer_joined_at, v_consultation.start_time);
+
+    -- CRITICAL BUSINESS RULE: Only ACTIVE consultations where astrologer has actually joined (or start_time recorded) are billable!
+    IF v_consultation.state != 'ACTIVE' OR v_effective_start IS NULL THEN
         RETURN QUERY SELECT 'NOT_ACTIVE'::VARCHAR, p_consultation_id, v_consultation.user_id, v_consultation.astrologer_id, COALESCE(v_consultation.rate_per_minute, 0.00), 0, COALESCE(v_consultation.last_billed_minute, 0), 0.00::NUMERIC, COALESCE(v_consultation.total_amount, 0.00), 0.00::NUMERIC;
         RETURN;
     END IF;
 
-    v_effective_start := v_consultation.astrologer_joined_at;
+    IF v_consultation.astrologer_joined_at IS NULL THEN
+        UPDATE consultations SET astrologer_joined_at = v_effective_start WHERE id = p_consultation_id;
+    END IF;
 
     -- Calculate elapsed seconds strictly from when the astrologer joined
     v_elapsed_seconds := GREATEST(0, FLOOR(EXTRACT(EPOCH FROM (NOW() - v_effective_start)))::INT);

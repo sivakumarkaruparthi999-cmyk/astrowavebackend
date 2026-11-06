@@ -30,6 +30,20 @@ export function getRazorpayClient(): Razorpay {
   });
 }
 
+export function validateRazorpayConfig(): { valid: boolean; missing: string[] } {
+  const missing: string[] = [];
+  if (!getRazorpayKeyId()) {
+    missing.push('RAZORPAY_KEY_ID');
+  }
+  if (!getRazorpayKeySecret()) {
+    missing.push('RAZORPAY_KEY_SECRET');
+  }
+  return {
+    valid: missing.length === 0,
+    missing,
+  };
+}
+
 // Razorpay SDK Instance
 export const razorpayClient = getRazorpayClient();
 

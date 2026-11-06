@@ -46,8 +46,8 @@ export class PoojaController {
         return;
       }
 
-      if (!/^([01]\d|2[0-3]):[0-5]\d(:[0-5]\d)?$/.test(bookingTime)) {
-        res.status(400).json({ success: false, error: 'Invalid bookingTime format. Expected HH:MM or HH:MM:SS.' });
+      if (!/^([01]?\d|2[0-3]):[0-5]\d(:[0-5]\d)?(\s*(AM|PM|am|pm))?$/i.test(String(bookingTime).trim())) {
+        res.status(400).json({ success: false, error: 'Invalid bookingTime format. Expected HH:MM, HH:MM:SS, or HH:MM AM/PM.' });
         return;
       }
 

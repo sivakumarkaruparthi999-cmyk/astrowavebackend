@@ -38,6 +38,8 @@ export async function runMigrations(closePool: boolean = true) {
       '010_reconcile_wallet_ledger.sql',
       'catalog_seed.sql',
       '011_astrologer_joined_tracking.sql',
+      '012_unique_payment_id.sql',
+      '013_seed_astrologers.sql',
     ];
 
     let appliedCount = 0;

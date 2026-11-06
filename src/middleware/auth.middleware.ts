@@ -23,6 +23,10 @@ import { verifyFirebaseIdToken } from '../services/firebase.service.js';
 import { syncFirebaseUser } from '../services/user-sync.service.js';
 
 export async function authenticate(req: AuthenticatedRequest, res: Response, next: NextFunction): Promise<void> {
+  if (req.method === 'OPTIONS') {
+    return next();
+  }
+
   const authHeader = req.headers.authorization;
   let token: string | undefined;
 
@@ -106,6 +110,10 @@ export async function optionalAuthenticate(req: AuthenticatedRequest, res: Respo
 
 export function requireRole(allowedRoles: string[]) {
   return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+    if (req.method === 'OPTIONS') {
+      return next();
+    }
+
     if (!req.user) {
       res.status(401).json({ success: false, error: 'Authentication required' });
       return;

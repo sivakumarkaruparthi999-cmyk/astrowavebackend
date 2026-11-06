@@ -355,36 +355,38 @@ export function initSocketServer(io: SocketIOServer) {
         socket.to(room).emit('user_joined_room', joinPayload);
 
         if (!isCustomer) {
-          // Astrologer has joined! Atomically mark consultation ACTIVE and set astrologer_joined_at!
+          // Astrologer has joined! Atomically mark consultation ACTIVE only if in REQUESTED or ACCEPTED state!
           const activated = await queryPostgresSingle(
             `UPDATE consultations
              SET state = 'ACTIVE',
                  astrologer_joined_at = COALESCE(astrologer_joined_at, NOW()),
                  start_time = COALESCE(start_time, NOW()),
                  updated_at = NOW()
-             WHERE id = $1
+             WHERE id = $1 AND state IN ('REQUESTED', 'ACCEPTED')
              RETURNING *`,
             [consultationId]
           );
 
-          console.log(`[Socket.IO] Astrologer joined consultation ${consultationId}. Marked ACTIVE, joined at: ${activated?.astrologer_joined_at || timestamp}`);
+          if (activated) {
+            console.log(`[Socket.IO] Astrologer joined consultation ${consultationId}. Marked ACTIVE, joined at: ${activated.astrologer_joined_at || timestamp}`);
 
-          const startPayload = {
-            id: consultationId,
-            consultationId,
-            status: 'ACTIVE',
-            state: 'ACTIVE',
-            astrologerId: userId,
-            customerId: consultation.user_id,
-            startTime: activated?.start_time || timestamp,
-            astrologerJoinedAt: activated?.astrologer_joined_at || timestamp,
-            astrologerJoined: true,
-          };
+            const startPayload = {
+              id: consultationId,
+              consultationId,
+              status: 'ACTIVE',
+              state: 'ACTIVE',
+              astrologerId: userId,
+              customerId: consultation.user_id,
+              startTime: activated.start_time || timestamp,
+              astrologerJoinedAt: activated.astrologer_joined_at || timestamp,
+              astrologerJoined: true,
+            };
 
-          io.to(room).emit('astrologer_joined', startPayload);
-          io.to(room).emit('consultation_started', startPayload);
-          io.to(`user_${consultation.user_id}`).emit('astrologer_joined', startPayload);
-          io.to(`user_${consultation.user_id}`).emit('consultation_started', startPayload);
+            io.to(room).emit('astrologer_joined', startPayload);
+            io.to(room).emit('consultation_started', startPayload);
+            io.to(`user_${consultation.user_id}`).emit('astrologer_joined', startPayload);
+            io.to(`user_${consultation.user_id}`).emit('consultation_started', startPayload);
+          }
         } else {
           // Customer joined: notify client of current astrologer presence status
           socket.emit('consultation_status', {

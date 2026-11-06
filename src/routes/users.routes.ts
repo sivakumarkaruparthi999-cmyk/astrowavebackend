@@ -17,6 +17,8 @@ router.get('/kundlis', authenticate, UsersController.listSavedKundlis);
 router.post('/kundli', authenticate, UsersController.saveKundli);
 router.post('/kundlis', authenticate, UsersController.saveKundli);
 router.get('/notifications', authenticate, validatePagination, UsersController.getNotifications);
+router.put('/notifications/all/read', authenticate, UsersController.markNotificationRead);
 router.put('/notifications/:id/read', authenticate, validateUuidParam('id'), UsersController.markNotificationRead);
+router.delete('/me', authenticate, UsersController.deleteAccount);
 
 export default router;

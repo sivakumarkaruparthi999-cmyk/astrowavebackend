@@ -20,6 +20,7 @@ import videoCallsRoutes from './routes/video-calls.routes.js';
 import payoutsRoutes from './routes/payouts.routes.js';
 import astrologyRoutes from './routes/astrology.routes.js';
 import adminRoutes from './routes/admin.routes.js';
+import razorpayCheckoutRoutes from './routes/razorpay-checkout.routes.js';
 
 import { checkDatabaseHealth, queryPostgres, queryPostgresSingle } from './config/db.js';
 import { checkRedisHealth } from './config/redis.js';
@@ -34,6 +35,7 @@ import {
   globalLimiter,
   authLimiter,
   adminAuthLimiter,
+  adminDashboardLimiter,
   financialLimiter,
   consultationLimiter,
   chatLimiter,
@@ -98,7 +100,7 @@ const configuredOrigins = (process.env.ALLOWED_ORIGINS || process.env.CORS_ORIGI
   .filter(Boolean);
 
 const isProduction = process.env.NODE_ENV === 'production';
-// Always permit local web origins (admin: 3000, customer: 3001, astrologer: 3002) and merge with configured env origins
+// Always permit local and production web origins and merge with configured env origins
 const localWebOrigins = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
@@ -106,6 +108,8 @@ const localWebOrigins = [
   'http://127.0.0.1:3001',
   'http://localhost:3002',
   'http://127.0.0.1:3002',
+  'https://astrowave.it.com',
+  'https://www.astrowave.it.com',
 ];
 
 const ALLOWED_ORIGINS: string[] = isProduction
@@ -119,13 +123,26 @@ const ALLOWED_ORIGINS: string[] = isProduction
       ...configuredOrigins,
     ];
 
+function isOriginAllowed(origin?: string): boolean {
+  if (!origin) return true;
+  if (ALLOWED_ORIGINS.includes(origin)) return true;
+  try {
+    const url = new URL(origin);
+    const host = url.hostname;
+    if (host.endsWith('vercel.app') || host.endsWith('railway.app') || host.endsWith('astrowave.it.com') || host === 'astrowave.it.com') {
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
 // CSRF Defense: Block unauthorized cross-origin state mutations when browser sends Origin
 app.use((req: Request, res: Response, next: NextFunction) => {
   const origin = req.headers.origin;
   const method = req.method.toUpperCase();
 
   if (origin && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) {
-    if (!ALLOWED_ORIGINS.includes(origin)) {
+    if (!isOriginAllowed(origin)) {
       res.status(403).json({
         success: false,
         message: 'Forbidden: Cross-origin state mutation blocked by CSRF / Origin policy',
@@ -143,7 +160,7 @@ app.use(
     origin: (origin, callback) => {
       // Allow non-browser agents (mobile apps, backend services) without Origin header
       if (!origin) return callback(null, true);
-      if (ALLOWED_ORIGINS.includes(origin)) {
+      if (isOriginAllowed(origin)) {
         return callback(null, true);
       }
       return callback(null, false);
@@ -415,12 +432,13 @@ app.use('/api/chat', chatLimiter, chatRoutes);
 app.use('/api/pooja', publicLimiter, poojaRoutes);
 app.use('/api/muhurat', publicLimiter, muhuratRoutes);
 app.use('/api/payments', financialLimiter, paymentsRoutes);
+app.use(financialLimiter, razorpayCheckoutRoutes);
 app.use('/api/wallet', financialLimiter, walletRoutes);
 app.use('/api/calls', callsLimiter, callsRoutes);
 app.use('/api/video-calls', callsLimiter, videoCallsRoutes);
 app.use('/api/payouts', financialLimiter, payoutsRoutes);
 app.use('/api/astrology', searchLimiter, astrologyRoutes);
-app.use('/api/admin', adminAuthLimiter, adminRoutes);
+app.use('/api/admin', adminDashboardLimiter, adminRoutes);
 
 // Centralized 404 Handler
 app.use(notFoundHandler);

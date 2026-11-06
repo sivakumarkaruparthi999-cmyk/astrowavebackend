@@ -149,4 +149,69 @@ export class UsersController {
       res.status(500).json({ success: false, error: (err as Error).message });
     }
   }
+
+  /**
+   * DELETE /api/users/me
+   * Soft-deletes and anonymizes user account in accordance with Google Play Store
+   * and Indian digital privacy regulations. Revokes active tokens and anonymizes PII
+   * while preserving immutable financial audit logs.
+   */
+  static async deleteAccount(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const userId = req.user?.userId;
+      if (!userId) {
+        res.status(401).json({ success: false, error: 'Unauthorized' });
+        return;
+      }
+
+      const anonymizedId = userId.substring(0, 8);
+      const timestamp = Date.now();
+      const anonymizedPhone = `deleted_${anonymizedId}_${timestamp}`;
+      const anonymizedEmail = `deleted_${anonymizedId}_${timestamp}@deleted.local`;
+
+      // 1. Anonymize user auth credentials & set status to deleted
+      await queryPostgres(
+        `UPDATE users
+         SET phone = $1,
+             email = $2,
+             status = 'deleted',
+             password_hash = NULL,
+             firebase_uid = NULL,
+             updated_at = NOW()
+         WHERE id = $3`,
+        [anonymizedPhone, anonymizedEmail, userId]
+      );
+
+      // 2. Anonymize profile personal identity details
+      await queryPostgres(
+        `UPDATE profiles
+         SET full_name = 'Deleted User',
+             avatar_url = NULL,
+             bio = NULL,
+             place_of_birth = NULL,
+             latitude = NULL,
+             longitude = NULL,
+             updated_at = NOW()
+         WHERE id = $1`,
+        [userId]
+      );
+
+      // 3. Purge saved kundli charts
+      await queryPostgres('DELETE FROM user_kundli_profiles WHERE user_id = $1', [userId]);
+
+      // 4. Invalidate all active refresh tokens and sessions
+      await queryPostgres('DELETE FROM refresh_tokens WHERE user_id = $1', [userId]);
+
+      // 5. Clear authentication cookies
+      res.clearCookie('astro_access_token', { path: '/' });
+      res.clearCookie('astro_refresh_token', { path: '/' });
+
+      res.status(200).json({
+        success: true,
+        message: 'Account deleted and personal data anonymized successfully',
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, error: (err as Error).message });
+    }
+  }
 }

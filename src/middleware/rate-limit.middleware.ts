@@ -141,6 +141,20 @@ export const adminAuthLimiter = rateLimit({
 });
 
 /**
+ * Admin Console Operations Limiter (/admin/* browsing and dashboard metrics)
+ */
+export const adminDashboardLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 600, // 600 requests per 15 minutes for authenticated admin console
+  standardHeaders: true,
+  legacyHeaders: false,
+  passOnStoreError: true,
+  store: getRateLimitStore('admin-dashboard'),
+  keyGenerator: routeKeyGenerator,
+  handler: createRateLimitHandler('Admin request rate limit reached. Please wait a moment before retrying.'),
+});
+
+/**
  * 6. Financial Operations Limiter (/wallet/*, /payments/*, /payouts/*)
  */
 export const financialLimiter = rateLimit({

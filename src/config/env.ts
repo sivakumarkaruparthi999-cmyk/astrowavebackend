@@ -89,6 +89,14 @@ export function validateEnv(): ValidatedEnv {
     }
   }
 
+  // Razorpay configuration check: detect missing environment variables at startup
+  if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+    const missingRazorpay: string[] = [];
+    if (!process.env.RAZORPAY_KEY_ID) missingRazorpay.push('RAZORPAY_KEY_ID');
+    if (!process.env.RAZORPAY_KEY_SECRET) missingRazorpay.push('RAZORPAY_KEY_SECRET');
+    console.warn(`[Razorpay Config] Missing environment variable(s): ${missingRazorpay.join(', ')}`);
+  }
+
   cachedEnv = (result.success ? result.data : process.env) as ValidatedEnv;
   return cachedEnv;
 }

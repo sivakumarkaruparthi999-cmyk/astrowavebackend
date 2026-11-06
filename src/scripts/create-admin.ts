@@ -8,7 +8,7 @@ const __filename = fileURLToPath(import.meta.url);
 
 export async function createOrUpdateAdmin(closePool: boolean = true) {
   const configuredEmail = (process.env.ADMIN_EMAIL || process.env.INITIAL_ADMIN_EMAIL || '').trim().toLowerCase();
-  const envPassword = process.env.ADMIN_PASSWORD || process.env.INITIAL_ADMIN_PASSWORD || 'Admin@123456';
+  const envPassword = process.env.ADMIN_PASSWORD || process.env.INITIAL_ADMIN_PASSWORD || 'Admin@123';
 
   const targetEmails = new Set<string>();
   if (configuredEmail) {

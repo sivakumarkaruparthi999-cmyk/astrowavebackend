@@ -218,10 +218,11 @@ export class BillingService {
       // MongoDB lookup error shouldn't block billing
     }
 
-    // 2. Check PostgreSQL astrologer_joined_at (strictly when astrologer joined)
-    if (consultation.astrologer_joined_at) {
+    // 2. Check PostgreSQL effective start time (when astrologer joined or session started)
+    const effectiveJoinedAt = consultation.astrologer_joined_at || consultation.start_time;
+    if (effectiveJoinedAt) {
       isConnectedCall = true;
-      const wallClockSeconds = Math.max(0, Math.floor((Date.now() - new Date(consultation.astrologer_joined_at).getTime()) / 1000));
+      const wallClockSeconds = Math.max(0, Math.floor((Date.now() - new Date(effectiveJoinedAt).getTime()) / 1000));
       reconciledSeconds = Math.max(reconciledSeconds, wallClockSeconds);
     } else {
       // Astrologer NEVER joined the consultation: amount should NOT be deducted
@@ -229,24 +230,24 @@ export class BillingService {
       reconciledSeconds = 0;
     }
 
-    // 3. Check client-reported duration only if astrologer actually joined
-    if (consultation.astrologer_joined_at && durationSeconds !== undefined && durationSeconds > 0) {
+    // 3. Check client-reported duration only if astrologer joined or session started
+    if (effectiveJoinedAt && durationSeconds !== undefined && durationSeconds > 0) {
       isConnectedCall = true;
       reconciledSeconds = Math.max(reconciledSeconds, durationSeconds);
-    } else if (durationSeconds === 0 || !consultation.astrologer_joined_at) {
+    } else if (durationSeconds === 0 || !effectiveJoinedAt) {
       // Explicit 0 duration or astrologer never joined
-      if (!consultation.astrologer_joined_at) {
+      if (!effectiveJoinedAt) {
         reconciledSeconds = 0;
         isConnectedCall = false;
       }
-    } else if (!isConnectedCall && consultation.type === 'chat' && consultation.astrologer_joined_at) {
+    } else if (!isConnectedCall && consultation.type === 'chat' && effectiveJoinedAt) {
       // Completed chat with astrologer joined
       reconciledSeconds = 60;
       isConnectedCall = true;
     }
 
-    // Cap reported duration strictly against actual elapsed wall-clock time since astrologer joined
-    const startTime = consultation.astrologer_joined_at ? new Date(consultation.astrologer_joined_at).getTime() : Date.now();
+    // Cap reported duration strictly against actual elapsed wall-clock time since astrologer joined or started
+    const startTime = effectiveJoinedAt ? new Date(effectiveJoinedAt).getTime() : Date.now();
     const actualElapsedSeconds = Math.max(0, Math.floor((Date.now() - startTime) / 1000) + 60); // 60s grace buffer
     const maxPossibleSeconds = Math.min(7200, actualElapsedSeconds);
     if (reconciledSeconds > maxPossibleSeconds) {
@@ -302,7 +303,7 @@ export class BillingService {
 
     // Execute atomic PostgreSQL reconciled billing procedure
     const billingRes = await queryPostgresSingle(
-      'SELECT settle_consultation_billing_atomic($1, $2, 0.00, $3) AS id',
+      'SELECT settle_consultation_billing_atomic($1, $2, 20.00, $3) AS id',
       [consultationId, reconciledSeconds, idempotencyKey || null]
     );
 

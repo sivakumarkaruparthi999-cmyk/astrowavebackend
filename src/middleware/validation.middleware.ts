@@ -143,7 +143,7 @@ export const updateProfileSchema = z
     dateOfBirth: z.string().max(50).optional(),
     timeOfBirth: z.string().max(50).optional(),
     placeOfBirth: z.string().max(100).optional(),
-    gender: z.enum(['male', 'female', 'other']).optional(),
+    gender: z.preprocess((val) => typeof val === 'string' ? val.toLowerCase() : val, z.enum(['male', 'female', 'other'])).optional(),
     latitude: z.number().min(-90).max(90).optional(),
     longitude: z.number().min(-180).max(180).optional(),
     bio: z.string().max(1000).optional(),
