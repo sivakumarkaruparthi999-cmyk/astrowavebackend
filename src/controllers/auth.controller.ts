@@ -247,11 +247,30 @@ export class AuthController {
           verifiedName = payload.name || 'Google User';
           verifiedPicture = payload.picture || null;
         } catch (verifyErr) {
-          res.status(401).json({
-            success: false,
-            error: 'Google ID token verification failed: ' + (verifyErr as Error).message,
-          });
-          return;
+          // If ID token verification failed, check if rawToken is a valid Google OAuth access_token from GIS
+          try {
+            const userinfoRes = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
+              headers: { Authorization: `Bearer ${rawToken}` },
+            });
+            if (userinfoRes.ok) {
+              const info = (await userinfoRes.json()) as any;
+              if (info?.email) {
+                verifiedEmail = info.email;
+                verifiedName = info.name || 'Google User';
+                verifiedPicture = info.picture || null;
+              } else {
+                throw new Error('Google userinfo response did not include email');
+              }
+            } else {
+              throw verifyErr;
+            }
+          } catch {
+            res.status(401).json({
+              success: false,
+              error: 'Google authentication failed: ' + (verifyErr as Error).message,
+            });
+            return;
+          }
         }
       }
 
