@@ -208,74 +208,23 @@ export class AstrologersController {
         ]
       );
 
-      let autoStartedConsultation: any = null;
       const io = getSocketServer();
 
       if (parsedOnline === true) {
         if (io) {
           io.emit('astrologer_presence_changed', { astrologerId, isOnline: true });
-        }
-
-        // Find queued consultation requested while astrologer was offline
-        const pending = await queryPostgresSingle(
-          `SELECT c.*, p.full_name as customer_name
-           FROM consultations c
-           LEFT JOIN profiles p ON c.user_id = p.id
-           WHERE c.astrologer_id = $1 AND c.state = 'REQUESTED' AND c.type = 'chat'
-           ORDER BY c.created_at ASC
-           LIMIT 1`,
-          [astrologerId]
-        );
-
-        if (pending) {
-          const ratePerMinute = Number(pending.rate_per_minute) || 20;
-          const wallet = await queryPostgresSingle('SELECT balance FROM wallets WHERE user_id = $1', [pending.user_id]);
-          const currentBalance = wallet ? Number(wallet.balance) : 0;
-
-          if (currentBalance >= ratePerMinute) {
-            const accepted = await queryPostgresSingle(
-              `UPDATE consultations
-               SET state = 'ACCEPTED', updated_at = NOW()
-               WHERE id = $1
-               RETURNING *`,
-              [pending.id]
-            );
-
-            await queryPostgres('UPDATE astrologer_profiles SET is_busy = true WHERE id = $1', [astrologerId]);
-
-            await queryPostgres(
-              `INSERT INTO notifications (user_id, title, body, type, data)
-               VALUES ($1, 'Astrologer Online - Connecting Chat', 'Your astrologer is now online! Connecting consultation chat.', 'consultation', $2)`,
-              [pending.user_id, JSON.stringify({ consultationId: pending.id })]
-            );
-
-            if (io) {
-              const startPayload = {
-                id: pending.id,
-                consultationId: pending.id,
-                status: 'ACCEPTED',
-                state: 'ACCEPTED',
-                astrologerId,
-                customerId: pending.user_id,
-                userId: pending.user_id,
-                customerName: pending.customer_name || 'Customer',
-                type: 'chat',
-                ratePerMinute,
-                astrologerJoined: false,
-                autoStarted: true,
-              };
-
-              io.to(`consultation_${pending.id}`).emit('astrologer_online', startPayload);
-              io.to(`user_${pending.user_id}`).emit('astrologer_online', startPayload);
-              io.to(`user_${astrologerId}`).emit('pending_chat_autostarted', startPayload);
-            }
-
-            autoStartedConsultation = accepted;
-          }
+          io.emit('astrologer_status_changed', {
+            astrologerId,
+            isOnline: true,
+          });
         }
       } else if (parsedOnline === false) {
         if (io) {
           io.emit('astrologer_presence_changed', { astrologerId, isOnline: false });
+          io.emit('astrologer_status_changed', {
+            astrologerId,
+            isOnline: false,
+          });
         }
       }
 
@@ -284,7 +233,6 @@ export class AstrologersController {
         success: true,
         message: 'Status updated',
         data: updated,
-        autoStartedConsultation,
       });
     } catch (err) {
       res.status(500).json({ success: false, error: (err as Error).message });

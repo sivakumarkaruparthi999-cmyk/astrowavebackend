@@ -304,6 +304,7 @@ export class ConsultationsController {
     try {
       const userId = req.user?.userId;
       const role = req.user?.role;
+      const { state } = req.query;
 
       let sql = `
         SELECT c.*,
@@ -315,13 +316,25 @@ export class ConsultationsController {
         LEFT JOIN profiles app ON c.astrologer_id = app.id
       `;
 
+      const params: any[] = [userId];
       if (role === 'astrologer') {
-        sql += ` WHERE c.astrologer_id = $1 ORDER BY c.created_at DESC LIMIT 50`;
+        sql += ` WHERE c.astrologer_id = $1`;
       } else {
-        sql += ` WHERE c.user_id = $1 ORDER BY c.created_at DESC LIMIT 50`;
+        sql += ` WHERE c.user_id = $1`;
       }
 
-      const list = await queryPostgres(sql, [userId]);
+      if (state) {
+        if (state === 'REQUESTED' || state === 'pending') {
+          sql += ` AND c.state IN ('REQUESTED', 'ACCEPTED')`;
+        } else {
+          params.push(state);
+          sql += ` AND c.state = $${params.length}`;
+        }
+      }
+
+      sql += ` ORDER BY c.created_at DESC LIMIT 50`;
+
+      const list = await queryPostgres(sql, params);
       res.status(200).json({ success: true, data: list || [] });
     } catch (err) {
       res.status(500).json({ success: false, error: (err as Error).message });
