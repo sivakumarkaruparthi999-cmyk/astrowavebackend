@@ -73,6 +73,13 @@ export class ConsultationsController {
         [userId, astrologerId, type, ratePerMinute]
       );
 
+      // Check if astrologer is currently engaged in another call or chat
+      const activeConsultation = await queryPostgresSingle(
+        `SELECT id, type FROM consultations WHERE astrologer_id = $1 AND state IN ('ACTIVE', 'IN_PROGRESS', 'ACCEPTED') LIMIT 1`,
+        [astrologerId]
+      );
+      const isCurrentlyEngaged = Boolean(astrologer.is_busy || activeConsultation);
+
       // Customer profile for rich notification
       const userProfile = await queryPostgresSingle('SELECT full_name, avatar_url FROM profiles WHERE id = $1', [userId]);
       const customerName = userProfile?.full_name || 'Customer';
@@ -109,6 +116,31 @@ export class ConsultationsController {
         io.to(`user_${astrologerId}`).emit('consultation_requested', socketPayload);
         io.to(`user_${astrologerId}`).emit('incoming_consultation', socketPayload);
         io.to(`user_${userId}`).emit('consultation_requested', socketPayload);
+
+        // If the astrologer is already engaged in a call or chat, send an explicit reminder alert
+        if (isCurrentlyEngaged) {
+          io.to(`user_${astrologerId}`).emit('user_waiting_alert', {
+            consultationId: consultation.id,
+            customerId: userId,
+            customerName: customerName,
+            type: type,
+            waitingNotice: `${customerName} is waiting for you! (Requested: ${type.toUpperCase()})`,
+            activeType: activeConsultation?.type || 'call',
+            createdAt: consultation.created_at || new Date().toISOString(),
+          });
+        }
+
+        // Broadcast astrologer status change with updated waiting count
+        const countRes = await queryPostgresSingle(
+          `SELECT COUNT(*)::int AS count FROM consultations WHERE astrologer_id = $1 AND state = 'REQUESTED'`,
+          [astrologerId]
+        );
+        io.emit('astrologer_status_changed', {
+          astrologerId,
+          isBusy: isCurrentlyEngaged,
+          activeConsultationType: activeConsultation?.type || type,
+          waitingUsersCount: Number(countRes?.count || 1),
+        });
       }
 
       res.status(201).json({
@@ -162,6 +194,13 @@ export class ConsultationsController {
         io.to(`consultation_${consultation.id}`).emit('consultation_started', activePayload);
         io.to(`user_${consultation.user_id}`).emit('consultation_started', activePayload);
         io.to(`user_${astrologerId}`).emit('consultation_started', activePayload);
+
+        io.emit('astrologer_status_changed', {
+          astrologerId,
+          isBusy: true,
+          activeConsultationType: consultation.type,
+          waitingUsersCount: 0,
+        });
       }
 
       res.status(200).json({ success: true, message: 'Consultation accepted', data: consultation });

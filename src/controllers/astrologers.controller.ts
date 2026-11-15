@@ -12,7 +12,9 @@ export class AstrologersController {
         SELECT u.id, p.avatar_url, ap.display_name, ap.bio,
                 ap.experience_years, ap.hourly_rate, ap.per_minute_rate,
                 ap.is_verified, ap.verification_status, ap.is_online, ap.is_busy, ap.rating,
-                ap.total_reviews, ap.total_consultations, ap.languages, ap.specializations
+                ap.total_reviews, ap.total_consultations, ap.languages, ap.specializations,
+                (SELECT c.type FROM consultations c WHERE c.astrologer_id = u.id AND c.state IN ('ACTIVE', 'IN_PROGRESS', 'ACCEPTED') ORDER BY c.created_at DESC LIMIT 1) AS active_consultation_type,
+                (SELECT COUNT(*)::int FROM consultations c WHERE c.astrologer_id = u.id AND c.state = 'REQUESTED') AS waiting_users_count
         FROM users u
         JOIN astrologer_profiles ap ON u.id = ap.id
         LEFT JOIN profiles p ON u.id = p.id
@@ -45,17 +47,24 @@ export class AstrologersController {
       params.push(limit, offset);
 
       const astrologers = await queryPostgres(sql, params);
-      const formatted = (astrologers || []).map((a: any) => ({
-        ...a,
-        experience_years: Number(a.experience_years || 0),
-        hourly_rate: Number(a.hourly_rate || 0),
-        per_minute_rate: Number(a.per_minute_rate || 0),
-        rating: Number(a.rating || 5.0),
-        total_reviews: Number(a.total_reviews || 0),
-        total_consultations: Number(a.total_consultations || 0),
-        languages: Array.isArray(a.languages) ? a.languages : [],
-        specializations: Array.isArray(a.specializations) ? a.specializations : [],
-      }));
+      const formatted = (astrologers || []).map((a: any) => {
+        const isBusy = Boolean(a.is_busy || a.active_consultation_type);
+        const activeType = a.active_consultation_type || (isBusy ? 'call' : null);
+        return {
+          ...a,
+          is_busy: isBusy,
+          active_consultation_type: isBusy ? activeType : null,
+          waiting_users_count: Number(a.waiting_users_count || 0),
+          experience_years: Number(a.experience_years || 0),
+          hourly_rate: Number(a.hourly_rate || 0),
+          per_minute_rate: Number(a.per_minute_rate || 0),
+          rating: Number(a.rating || 5.0),
+          total_reviews: Number(a.total_reviews || 0),
+          total_consultations: Number(a.total_consultations || 0),
+          languages: Array.isArray(a.languages) ? a.languages : [],
+          specializations: Array.isArray(a.specializations) ? a.specializations : [],
+        };
+      });
       res.status(200).json({ success: true, data: formatted });
     } catch (err) {
       res.status(500).json({ success: false, error: (err as Error).message });
@@ -69,7 +78,9 @@ export class AstrologersController {
         `SELECT u.id, p.avatar_url, ap.display_name, ap.bio,
                 ap.experience_years, ap.hourly_rate, ap.per_minute_rate,
                 ap.is_verified, ap.is_online, ap.is_busy, ap.rating,
-                ap.total_reviews, ap.total_consultations, ap.languages, ap.specializations
+                ap.total_reviews, ap.total_consultations, ap.languages, ap.specializations,
+                (SELECT c.type FROM consultations c WHERE c.astrologer_id = u.id AND c.state IN ('ACTIVE', 'IN_PROGRESS', 'ACCEPTED') ORDER BY c.created_at DESC LIMIT 1) AS active_consultation_type,
+                (SELECT COUNT(*)::int FROM consultations c WHERE c.astrologer_id = u.id AND c.state = 'REQUESTED') AS waiting_users_count
          FROM users u
          JOIN astrologer_profiles ap ON u.id = ap.id
          LEFT JOIN profiles p ON u.id = p.id
@@ -98,10 +109,16 @@ export class AstrologersController {
         [id]
       );
 
+      const isBusy = Boolean(astrologer.is_busy || astrologer.active_consultation_type);
+      const activeType = astrologer.active_consultation_type || (isBusy ? 'call' : null);
+
       res.status(200).json({
         success: true,
         data: {
           ...astrologer,
+          is_busy: isBusy,
+          active_consultation_type: isBusy ? activeType : null,
+          waiting_users_count: Number(astrologer.waiting_users_count || 0),
           experience_years: Number(astrologer.experience_years || 0),
           hourly_rate: Number(astrologer.hourly_rate || 0),
           per_minute_rate: Number(astrologer.per_minute_rate || 0),

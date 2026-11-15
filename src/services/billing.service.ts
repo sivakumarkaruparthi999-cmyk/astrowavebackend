@@ -296,6 +296,13 @@ export class BillingService {
           .to(`user_${consultation.user_id}`)
           .to(`user_${consultation.astrologer_id}`)
           .emit('consultation_ended', payload);
+
+        io.emit('astrologer_status_changed', {
+          astrologerId: consultation.astrologer_id,
+          isBusy: false,
+          activeConsultationType: null,
+          waitingUsersCount: 0,
+        });
       }
 
       return zeroBillingResult;
@@ -356,6 +363,13 @@ export class BillingService {
         .to(`user_${consultation.user_id}`)
         .to(`user_${consultation.astrologer_id}`)
         .emit('consultation_ended', payload);
+
+      io.emit('astrologer_status_changed', {
+        astrologerId: consultation.astrologer_id,
+        isBusy: false,
+        activeConsultationType: null,
+        waitingUsersCount: 0,
+      });
 
       if (updatedWallet) {
         io.to(`user_${consultation.user_id}`).emit('wallet_updated', {
