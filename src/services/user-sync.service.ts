@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { queryPostgres, queryPostgresSingle } from '../config/db.js';
 import { hashPassword } from '../auth/jwt.js';
 import { DecodedFirebaseToken } from './firebase.service.js';
+import { deriveNameFromEmail } from '../controllers/auth.controller.js';
 
 export interface SyncedUser {
   id: string;
@@ -49,6 +50,12 @@ export async function syncFirebaseUser(decoded: DecodedFirebaseToken): Promise<S
     if (picture && !user.avatar_url) {
       await queryPostgres(`UPDATE profiles SET avatar_url = $1 WHERE id = $2`, [picture, user.id]);
       user.avatar_url = picture;
+    }
+
+    const effectiveName = name || (email ? deriveNameFromEmail(email) : null);
+    if (effectiveName && (!user.full_name || user.full_name === 'User' || user.full_name === 'AstroWave User' || user.full_name === 'Seeker')) {
+      await queryPostgres(`UPDATE profiles SET full_name = $1 WHERE id = $2`, [effectiveName, user.id]);
+      user.full_name = effectiveName;
     }
 
     return {
@@ -106,6 +113,12 @@ export async function syncFirebaseUser(decoded: DecodedFirebaseToken): Promise<S
       existingByContact.avatar_url = picture;
     }
 
+    const linkedEffectiveName = name || (email ? deriveNameFromEmail(email) : null);
+    if (linkedEffectiveName && (!existingByContact.full_name || existingByContact.full_name === 'User' || existingByContact.full_name === 'AstroWave User' || existingByContact.full_name === 'Seeker')) {
+      await queryPostgres(`UPDATE profiles SET full_name = $1 WHERE id = $2`, [linkedEffectiveName, existingByContact.id]);
+      existingByContact.full_name = linkedEffectiveName;
+    }
+
     console.log(`[UserSync] Successfully linked Firebase UID ${uid} to existing AstroWave user ${existingByContact.id}`);
 
     return {
@@ -119,7 +132,8 @@ export async function syncFirebaseUser(decoded: DecodedFirebaseToken): Promise<S
   const randomPlaceholder = 'FIREBASE_AUTH_' + crypto.randomBytes(24).toString('hex');
   const passwordPlaceholderHash = await hashPassword(randomPlaceholder);
   const provider = sign_in_provider || (phone_number ? 'phone' : 'google');
-  const displayName = name || (phone_number ? `User ${phone_number.slice(-4)}` : 'AstroWave User');
+  const derivedEmailName = email ? deriveNameFromEmail(email) : null;
+  const displayName = name || (phone_number ? `User ${phone_number.slice(-4)}` : (derivedEmailName || 'AstroWave User'));
 
   const newUser = await queryPostgresSingle(
     `INSERT INTO users (email, phone, password_hash, role, status, is_verified, firebase_uid, auth_provider, last_login_at)

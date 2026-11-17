@@ -4,7 +4,7 @@ import { ChatMessage } from '../models/mongo/ChatMessage.js';
 import { ChatConversation } from '../models/mongo/ChatConversation.js';
 import fs from 'fs';
 import { StorageService, validateFileMagicBytes } from '../services/storage.service.js';
-import { queryPostgresSingle } from '../config/db.js';
+import { queryPostgres, queryPostgresSingle } from '../config/db.js';
 import { getSocketServer } from '../websocket/socket.server.js';
 import mongoose from 'mongoose';
 
@@ -45,7 +45,44 @@ export class ChatController {
       }
 
       let messages: any[] = [];
-      if (mongoose.connection && mongoose.connection.readyState === 1) {
+
+      // 1. Authoritative persistent storage: PostgreSQL chat_messages
+      try {
+        const pgRows = await queryPostgres(
+          `SELECT id, consultation_id, sender_id, recipient_id, sender_role, message_type, content, media_url, status, metadata, created_at
+           FROM chat_messages
+           WHERE consultation_id = $1
+           ORDER BY created_at ASC
+           LIMIT $2`,
+          [consultationId, Number(limit) || 100]
+        );
+        if (pgRows && pgRows.length > 0) {
+          messages = pgRows.map((r: any) => ({
+            id: r.id,
+            _id: r.id,
+            consultationId: r.consultation_id,
+            consultation_id: r.consultation_id,
+            senderId: r.sender_id,
+            sender_id: r.sender_id,
+            recipientId: r.recipient_id,
+            senderRole: r.sender_role,
+            sender: r.sender_role,
+            messageType: r.message_type,
+            content: r.content,
+            text: r.content,
+            mediaUrl: r.media_url,
+            status: r.status,
+            metadata: r.metadata,
+            createdAt: r.created_at,
+            created_at: r.created_at,
+          }));
+        }
+      } catch (pgErr) {
+        console.warn('[PostgreSQL] query warning in listMessages:', pgErr);
+      }
+
+      // 2. Secondary fallback: MongoDB (if connected and PostgreSQL had 0 records)
+      if (messages.length === 0 && mongoose.connection && mongoose.connection.readyState === 1) {
         try {
           const query: any = {
             $or: [
@@ -110,7 +147,30 @@ export class ChatController {
         });
       }
 
-      res.status(200).json({ success: true, data: messages || [] });
+      // Deduplicate messages in case a client sent duplicate via socket and HTTP or multiple retries
+      const deduplicated: any[] = [];
+      for (const msg of messages) {
+        const isDuplicate = deduplicated.some((existing) => {
+          if (existing.id && msg.id && existing.id === msg.id) return true;
+          if (existing._id && msg._id && existing._id === msg._id) return true;
+          if (
+            (existing.senderId || existing.sender_id) === (msg.senderId || msg.sender_id) &&
+            (existing.content || existing.text) === (msg.content || msg.text)
+          ) {
+            const timeDiff = Math.abs(
+              new Date(existing.createdAt || existing.created_at || Date.now()).getTime() -
+              new Date(msg.createdAt || msg.created_at || Date.now()).getTime()
+            );
+            if (timeDiff < 3000) return true;
+          }
+          return false;
+        });
+        if (!isDuplicate) {
+          deduplicated.push(msg);
+        }
+      }
+
+      res.status(200).json({ success: true, data: deduplicated });
     } catch (err) {
       res.status(500).json({ success: false, error: (err as Error).message });
     }
@@ -162,6 +222,24 @@ export class ChatController {
       const targetRecipientId = expectedRecipient;
 
       const effectiveSenderRole = isCustomer ? 'customer' : (isAstrologer ? 'astrologer' : userRole);
+
+      // Deduplication check: if a message with the same sender, consultation, and content arrived in the last 3 seconds (or same ID), return existing
+      const existingList = inMemoryChatStore.get(consultationId) || [];
+      const incomingId = id || _id;
+      const recentDuplicate = existingList.find((m: any) => {
+        if (incomingId && (m.id === incomingId || m._id === incomingId)) return true;
+        if (m.senderId === userId && (m.content === effectiveContent || m.text === effectiveContent)) {
+          const diff = Math.abs(Date.now() - new Date(m.createdAt || m.created_at || Date.now()).getTime());
+          if (diff < 3000) return true;
+        }
+        return false;
+      });
+
+      if (recentDuplicate) {
+        console.log(`[HTTP Chat] Deduplicated message for consultation ${consultationId}`);
+        res.status(200).json({ success: true, data: recentDuplicate });
+        return;
+      }
 
       const messageId = id || _id || `${Date.now()}-${Math.random().toString(36).substring(7)}`;
       const msgData: any = {
@@ -218,6 +296,37 @@ export class ChatController {
         }
       }
 
+      // Authoritative permanent storage in PostgreSQL chat_messages
+      try {
+        const isUuid = saved.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(saved.id);
+        const pgId = isUuid ? saved.id : undefined;
+        const pgResult = await queryPostgresSingle(
+          `INSERT INTO chat_messages (id, consultation_id, sender_id, recipient_id, sender_role, message_type, content, media_url, status, metadata, created_at)
+           VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+           ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content
+           RETURNING id, created_at`,
+          [
+            pgId,
+            consultationId,
+            userId,
+            targetRecipientId,
+            effectiveSenderRole,
+            messageType,
+            effectiveContent,
+            mediaUrl || null,
+            'sent',
+            JSON.stringify(metadata || {}),
+            saved.createdAt || new Date(),
+          ]
+        );
+        if (pgResult?.id) {
+          saved.id = pgResult.id;
+          saved._id = pgResult.id;
+        }
+      } catch (pgErr) {
+        console.error('[PostgreSQL] chat_messages insert error:', pgErr);
+      }
+
       // Persist in consultation-isolated in-memory store
       let list = inMemoryChatStore.get(consultationId);
       if (!list) {
@@ -233,9 +342,7 @@ export class ChatController {
       if (io) {
         const room = `consultation_${consultationId}`;
         console.log(`[HTTP Chat] Emitting message ${saved.id} to room ${room}`);
-        io.to(room).emit('new_message', saved);
         io.to(room).emit('chat_message', saved);
-        io.to(room).emit('receive_message', saved);
         if (targetRecipientId) {
           io.to(`user_${targetRecipientId}`).emit('incoming_chat', saved);
         }

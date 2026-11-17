@@ -1,14 +1,27 @@
 import { Response } from 'express';
+import crypto from 'crypto';
 import { queryPostgres, queryPostgresSingle } from '../config/db.js';
 import { AuthenticatedRequest } from '../middleware/auth.middleware.js';
 import { AstrologyEngineService } from '../services/astrology.service.js';
 import { WalletService } from '../services/wallet.service.js';
+import { StorageService } from '../services/storage.service.js';
 
 export class UsersController {
   static async updateProfile(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const userId = req.user?.userId;
       const { fullName, avatarUrl, dateOfBirth, timeOfBirth, placeOfBirth, gender, latitude, longitude, bio } = req.body;
+
+      let resolvedAvatar = avatarUrl;
+      if (resolvedAvatar && typeof resolvedAvatar === 'string' && resolvedAvatar.startsWith('data:image/')) {
+        try {
+          const extMatch = resolvedAvatar.match(/^data:image\/(\w+);base64,/);
+          const ext = extMatch ? (extMatch[1] === 'jpeg' ? '.jpg' : `.${extMatch[1]}`) : '.jpg';
+          resolvedAvatar = await StorageService.saveBase64File('avatars', `${crypto.randomUUID()}${ext}`, resolvedAvatar);
+        } catch (uploadErr) {
+          console.warn('[Users] Base64 avatar save error:', uploadErr);
+        }
+      }
 
       await queryPostgres(
         `UPDATE profiles
@@ -23,7 +36,7 @@ export class UsersController {
              bio = COALESCE($9, bio),
              updated_at = NOW()
          WHERE id = $10`,
-        [fullName, avatarUrl, dateOfBirth, timeOfBirth, placeOfBirth, gender, latitude, longitude, bio, userId]
+        [fullName, resolvedAvatar, dateOfBirth, timeOfBirth, placeOfBirth, gender, latitude, longitude, bio, userId]
       );
 
       const updated = await queryPostgresSingle('SELECT * FROM profiles WHERE id = $1', [userId]);

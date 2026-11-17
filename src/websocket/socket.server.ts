@@ -38,7 +38,7 @@ export function initSocketServer(io: SocketIOServer) {
   BillingService.startBillingScheduler(io);
 
   // Handshake authentication middleware
-  io.use((socket: AuthenticatedSocket, next) => {
+  io.use(async (socket: AuthenticatedSocket, next) => {
     const token = socket.handshake.auth?.token || socket.handshake.headers?.authorization?.replace('Bearer ', '');
     if (!token) {
       // Allow connection with fallback anonymous or reject
@@ -49,12 +49,21 @@ export function initSocketServer(io: SocketIOServer) {
       socket.userId = payload.userId;
       socket.userRole = payload.role;
       socket.tokenExp = payload.exp;
-      next();
+      return next();
     } catch (err) {
-      console.warn('[Socket.IO] Authentication failed for socket handshake:', (err as Error).message);
-      const authErr = new Error('Authentication failed: ' + (err as Error).message);
-      (authErr as any).data = { code: 'TOKEN_EXPIRED', error: (err as Error).message };
-      return next(authErr);
+      try {
+        const { verifyFirebaseIdToken } = await import('../services/firebase.service.js');
+        const { syncFirebaseUser } = await import('../services/user-sync.service.js');
+        const decoded = await verifyFirebaseIdToken(token, false);
+        const user = await syncFirebaseUser(decoded);
+        socket.userId = user.id;
+        socket.userRole = user.role;
+        return next();
+      } catch (fbErr) {
+        console.warn('[Socket.IO] Authentication failed for socket handshake:', (err as Error).message);
+        // Allow socket connection so client can emit reauthenticate once token refreshed
+        return next();
+      }
     }
   });
 
@@ -100,29 +109,47 @@ export function initSocketServer(io: SocketIOServer) {
     }
 
     // Re-authenticate live socket with refreshed access token
-    socket.on('reauthenticate', (data, callback) => {
+    socket.on('reauthenticate', async (data, callback) => {
       const newToken = data?.token;
       if (!newToken) {
         if (callback) callback({ success: false, error: 'Token is required' });
         return;
       }
       try {
-        const payload = verifyAccessToken(newToken);
-        if (socket.userId && socket.userId !== payload.userId) {
+        let authUserId: string;
+        let authRole: string;
+        let authExp: number | undefined;
+
+        try {
+          const payload = verifyAccessToken(newToken);
+          authUserId = payload.userId;
+          authRole = payload.role;
+          authExp = payload.exp;
+        } catch (jwtErr) {
+          const { verifyFirebaseIdToken } = await import('../services/firebase.service.js');
+          const { syncFirebaseUser } = await import('../services/user-sync.service.js');
+          const decoded = await verifyFirebaseIdToken(newToken, false);
+          const user = await syncFirebaseUser(decoded);
+          authUserId = user.id;
+          authRole = user.role;
+          authExp = (decoded as any).exp;
+        }
+
+        if (socket.userId && socket.userId !== authUserId) {
           if (callback) callback({ success: false, error: 'Cannot change socket identity' });
           return;
         }
 
-        socket.userId = payload.userId;
-        socket.userRole = payload.role;
-        socket.tokenExp = payload.exp;
+        socket.userId = authUserId;
+        socket.userRole = authRole;
+        socket.tokenExp = authExp;
 
         if (socket.expiryTimer) {
           clearTimeout(socket.expiryTimer);
         }
 
-        if (payload.exp) {
-          const msUntilExpiry = payload.exp * 1000 - Date.now();
+        if (authExp) {
+          const msUntilExpiry = authExp * 1000 - Date.now();
           if (msUntilExpiry > 0) {
             socket.expiryTimer = setTimeout(() => {
               socket.emit('auth_expired', { error: 'Access token expired.' });
@@ -131,11 +158,12 @@ export function initSocketServer(io: SocketIOServer) {
           }
         }
 
-        socket.join(`user_${payload.userId}`);
-        socket.join(`role_${payload.role}`);
-
-        if (callback) callback({ success: true, message: 'Session refreshed' });
+        socket.join(`user_${authUserId}`);
+        socket.join(`role_${authRole}`);
+        console.log(`[Socket.IO] Socket reauthenticated for user ${authUserId} (${authRole})`);
+        if (callback) callback({ success: true, userId: authUserId, role: authRole });
       } catch (err) {
+        console.warn('[Socket.IO] reauthenticate failed:', (err as Error).message);
         if (callback) callback({ success: false, error: (err as Error).message });
       }
     });
@@ -500,6 +528,24 @@ export function initSocketServer(io: SocketIOServer) {
 
         const conversationId = consultationId;
 
+        // Deduplication check: if a message with the same sender, consultation, and content arrived in the last 3 seconds (or same ID), return existing
+        const existingList = inMemoryChatStore.get(consultationId) || [];
+        const incomingId = parsed.id || parsed._id;
+        const recentDuplicate = existingList.find((m: any) => {
+          if (incomingId && (m.id === incomingId || m._id === incomingId)) return true;
+          if (m.senderId === senderId && (m.content === content || m.text === content)) {
+            const diff = Math.abs(Date.now() - new Date(m.createdAt || m.created_at || Date.now()).getTime());
+            if (diff < 3000) return true;
+          }
+          return false;
+        });
+
+        if (recentDuplicate) {
+          console.log(`[Socket.IO] Deduplicated send_message for consultation ${consultationId}`);
+          if (callback) callback({ success: true, message: recentDuplicate });
+          return;
+        }
+
         const messageId = parsed.id || parsed._id || `${Date.now()}-${Math.random().toString(36).substring(7)}`;
 
         // Persist message in MongoDB (if connected)
@@ -588,6 +634,37 @@ export function initSocketServer(io: SocketIOServer) {
           await queryPostgres('UPDATE astrologer_profiles SET is_busy = true WHERE id = $1', [consultation.astrologer_id]);
         }
 
+        // Authoritative permanent storage in PostgreSQL chat_messages
+        try {
+          const isUuid = savedMessage.id && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(savedMessage.id);
+          const pgId = isUuid ? savedMessage.id : undefined;
+          const pgRes = await queryPostgresSingle(
+            `INSERT INTO chat_messages (id, consultation_id, sender_id, recipient_id, sender_role, message_type, content, media_url, status, metadata, created_at)
+             VALUES (COALESCE($1::uuid, gen_random_uuid()), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+             ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content
+             RETURNING id, created_at`,
+            [
+              pgId,
+              consultationId,
+              senderId,
+              effectiveRecipientId,
+              effectiveSenderRole,
+              messageType,
+              content,
+              mediaUrl || null,
+              'sent',
+              JSON.stringify(metadata || {}),
+              new Date(savedMessage.createdAt || Date.now()),
+            ]
+          );
+          if (pgRes?.id) {
+            savedMessage.id = pgRes.id;
+            savedMessage._id = pgRes.id;
+          }
+        } catch (pgErr) {
+          console.error('[Socket.IO] PostgreSQL chat_messages write error:', pgErr);
+        }
+
         const room = `consultation_${consultationId}`;
         console.log(`BACKEND EMIT:\nroom=${room}`);
         console.log(`[Socket.IO] Emitting chat message strictly to room=${room}`);
@@ -602,10 +679,8 @@ export function initSocketServer(io: SocketIOServer) {
           memList.push(savedMessage);
         }
 
-        // Broadcast chat messages strictly to the consultation room
-        io.to(room).emit('new_message', savedMessage);
+        // Broadcast chat message strictly to the consultation room (single canonical event)
         io.to(room).emit('chat_message', savedMessage);
-        io.to(room).emit('receive_message', savedMessage);
 
         // Notify recipient's device if they have not yet entered the room
         if (effectiveRecipientId) {

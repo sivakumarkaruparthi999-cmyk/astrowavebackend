@@ -6,14 +6,16 @@ import { getSocketServer } from '../websocket/socket.server.js';
 export class AstrologersController {
   static async list(req: Request, res: Response): Promise<void> {
     try {
-      const { search, specialization, language, isOnline } = req.query;
+      const { search, specialization, language, isOnline, service, muhurat, is_muhurat_eligible, channel } = req.query;
 
       let sql = `
         SELECT u.id, p.avatar_url, ap.display_name, ap.bio,
                 ap.experience_years, ap.hourly_rate, ap.per_minute_rate,
+                ap.call_per_minute_rate, ap.is_muhurat_eligible,
+                ap.is_chat_enabled, ap.is_call_enabled,
                 ap.is_verified, ap.verification_status, ap.is_online, ap.is_busy, ap.rating,
                 ap.total_reviews, ap.total_consultations, ap.languages, ap.specializations,
-                (SELECT c.type FROM consultations c WHERE c.astrologer_id = u.id AND c.state IN ('ACTIVE', 'IN_PROGRESS', 'ACCEPTED') ORDER BY c.created_at DESC LIMIT 1) AS active_consultation_type,
+                (SELECT c.type FROM consultations c WHERE c.astrologer_id = u.id AND c.state IN ('ACTIVE', 'ACCEPTED') ORDER BY c.created_at DESC LIMIT 1) AS active_consultation_type,
                 (SELECT COUNT(*)::int FROM consultations c WHERE c.astrologer_id = u.id AND c.state = 'REQUESTED') AS waiting_users_count
         FROM users u
         JOIN astrologer_profiles ap ON u.id = ap.id
@@ -24,6 +26,16 @@ export class AstrologersController {
 
       if (isOnline === 'true') {
         sql += ` AND ap.is_online = true`;
+      }
+
+      if (service === 'muhurat' || muhurat === 'true' || is_muhurat_eligible === 'true') {
+        sql += ` AND ap.is_muhurat_eligible = true`;
+      }
+
+      if (channel === 'chat') {
+        sql += ` AND ap.is_chat_enabled = true`;
+      } else if (channel === 'call') {
+        sql += ` AND ap.is_call_enabled = true`;
       }
 
       if (search) {
@@ -58,6 +70,12 @@ export class AstrologersController {
           experience_years: Number(a.experience_years || 0),
           hourly_rate: Number(a.hourly_rate || 0),
           per_minute_rate: Number(a.per_minute_rate || 0),
+          call_per_minute_rate: Number(a.call_per_minute_rate || a.per_minute_rate || 25),
+          call_rate: Number(a.call_per_minute_rate || a.per_minute_rate || 25),
+          chat_rate: Number(a.per_minute_rate || 20),
+          is_muhurat_eligible: Boolean(a.is_muhurat_eligible),
+          is_chat_enabled: a.is_chat_enabled !== false,
+          is_call_enabled: a.is_call_enabled !== false,
           rating: Number(a.rating || 5.0),
           total_reviews: Number(a.total_reviews || 0),
           total_consultations: Number(a.total_consultations || 0),
@@ -77,9 +95,11 @@ export class AstrologersController {
       const astrologer = await queryPostgresSingle(
         `SELECT u.id, p.avatar_url, ap.display_name, ap.bio,
                 ap.experience_years, ap.hourly_rate, ap.per_minute_rate,
+                ap.call_per_minute_rate, ap.is_muhurat_eligible,
+                ap.is_chat_enabled, ap.is_call_enabled,
                 ap.is_verified, ap.is_online, ap.is_busy, ap.rating,
                 ap.total_reviews, ap.total_consultations, ap.languages, ap.specializations,
-                (SELECT c.type FROM consultations c WHERE c.astrologer_id = u.id AND c.state IN ('ACTIVE', 'IN_PROGRESS', 'ACCEPTED') ORDER BY c.created_at DESC LIMIT 1) AS active_consultation_type,
+                (SELECT c.type FROM consultations c WHERE c.astrologer_id = u.id AND c.state IN ('ACTIVE', 'ACCEPTED') ORDER BY c.created_at DESC LIMIT 1) AS active_consultation_type,
                 (SELECT COUNT(*)::int FROM consultations c WHERE c.astrologer_id = u.id AND c.state = 'REQUESTED') AS waiting_users_count
          FROM users u
          JOIN astrologer_profiles ap ON u.id = ap.id
@@ -90,6 +110,17 @@ export class AstrologersController {
 
       if (!astrologer) {
         res.status(404).json({ success: false, error: 'Astrologer not found' });
+        return;
+      }
+
+      // If astrologer is unapproved/unverified, forbid public access
+      const callerId = (req as AuthenticatedRequest).user?.userId;
+      const callerRole = (req as AuthenticatedRequest).user?.role;
+      const isSelf = callerId && callerId === astrologer.id;
+      const isAdmin = callerRole === 'admin' || callerRole === 'super_admin';
+
+      if (!astrologer.is_verified && !isSelf && !isAdmin) {
+        res.status(404).json({ success: false, error: 'Astrologer profile is pending verification and not publicly available' });
         return;
       }
 
@@ -122,6 +153,12 @@ export class AstrologersController {
           experience_years: Number(astrologer.experience_years || 0),
           hourly_rate: Number(astrologer.hourly_rate || 0),
           per_minute_rate: Number(astrologer.per_minute_rate || 0),
+          call_per_minute_rate: Number(astrologer.call_per_minute_rate || astrologer.per_minute_rate || 25),
+          call_rate: Number(astrologer.call_per_minute_rate || astrologer.per_minute_rate || 25),
+          chat_rate: Number(astrologer.per_minute_rate || 20),
+          is_muhurat_eligible: Boolean(astrologer.is_muhurat_eligible),
+          is_chat_enabled: astrologer.is_chat_enabled !== false,
+          is_call_enabled: astrologer.is_call_enabled !== false,
           rating: Number(astrologer.rating || 5.0),
           total_reviews: Number(astrologer.total_reviews || 0),
           total_consultations: Number(astrologer.total_consultations || 0),
@@ -139,7 +176,21 @@ export class AstrologersController {
   static async updateStatus(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const astrologerId = req.user?.userId;
-      const { isOnline, isBusy, perMinuteRate, hourlyRate, languages, specializations, bio } = req.body;
+      const {
+        isOnline,
+        isBusy,
+        perMinuteRate,
+        callPerMinuteRate,
+        call_per_minute_rate,
+        hourlyRate,
+        languages,
+        specializations,
+        bio,
+        isChatEnabled,
+        is_chat_enabled,
+        isCallEnabled,
+        is_call_enabled,
+      } = req.body;
 
       if (perMinuteRate !== undefined) {
         const rate = Number(perMinuteRate);
@@ -185,6 +236,20 @@ export class AstrologersController {
         }
       }
 
+      let parsedChatEnabled: boolean | null = null;
+      const chatVal = isChatEnabled !== undefined ? isChatEnabled : is_chat_enabled;
+      if (chatVal !== undefined) {
+        parsedChatEnabled = typeof chatVal === 'string' ? (chatVal.toLowerCase() === 'true' || chatVal === '1') : Boolean(chatVal);
+      }
+
+      let parsedCallEnabled: boolean | null = null;
+      const callVal = isCallEnabled !== undefined ? isCallEnabled : is_call_enabled;
+      if (callVal !== undefined) {
+        parsedCallEnabled = typeof callVal === 'string' ? (callVal.toLowerCase() === 'true' || callVal === '1') : Boolean(callVal);
+      }
+
+      const callRateVal = callPerMinuteRate !== undefined ? Number(callPerMinuteRate) : (call_per_minute_rate !== undefined ? Number(call_per_minute_rate) : null);
+
       await queryPostgres(
         `UPDATE astrologer_profiles
          SET is_online = COALESCE($1, is_online),
@@ -194,8 +259,11 @@ export class AstrologersController {
              languages = COALESCE($5, languages),
              specializations = COALESCE($6, specializations),
              bio = COALESCE($7, bio),
+             is_chat_enabled = COALESCE($8, is_chat_enabled),
+             is_call_enabled = COALESCE($9, is_call_enabled),
+             call_per_minute_rate = COALESCE($10, call_per_minute_rate),
              updated_at = NOW()
-         WHERE id = $8`,
+         WHERE id = $11`,
         [
           parsedOnline,
           parsedBusy,
@@ -204,34 +272,35 @@ export class AstrologersController {
           languages !== undefined ? languages : null,
           specializations !== undefined ? specializations : null,
           bio !== undefined ? bio : null,
+          parsedChatEnabled,
+          parsedCallEnabled,
+          callRateVal,
           astrologerId,
         ]
       );
 
       const io = getSocketServer();
 
-      if (parsedOnline === true) {
-        if (io) {
+      if (io) {
+        if (parsedOnline === true) {
           io.emit('astrologer_presence_changed', { astrologerId, isOnline: true });
-          io.emit('astrologer_status_changed', {
-            astrologerId,
-            isOnline: true,
-          });
-        }
-      } else if (parsedOnline === false) {
-        if (io) {
+        } else if (parsedOnline === false) {
           io.emit('astrologer_presence_changed', { astrologerId, isOnline: false });
-          io.emit('astrologer_status_changed', {
-            astrologerId,
-            isOnline: false,
-          });
         }
+
+        io.emit('astrologer_status_changed', {
+          astrologerId,
+          ...(parsedOnline !== null ? { isOnline: parsedOnline } : {}),
+          ...(parsedBusy !== null ? { isBusy: parsedBusy } : {}),
+          ...(parsedChatEnabled !== null ? { isChatEnabled: parsedChatEnabled } : {}),
+          ...(parsedCallEnabled !== null ? { isCallEnabled: parsedCallEnabled } : {}),
+        });
       }
 
       const updated = await queryPostgresSingle('SELECT * FROM astrologer_profiles WHERE id = $1', [astrologerId]);
       res.status(200).json({
         success: true,
-        message: 'Status updated',
+        message: 'Status and channel settings updated',
         data: updated,
       });
     } catch (err) {

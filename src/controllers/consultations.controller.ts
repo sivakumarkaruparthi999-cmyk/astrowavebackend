@@ -3,6 +3,8 @@ import { queryPostgres, queryPostgresSingle } from '../config/db.js';
 import { AuthenticatedRequest } from '../middleware/auth.middleware.js';
 import { getSocketServer } from '../websocket/socket.server.js';
 import { BillingService } from '../services/billing.service.js';
+import { CallsService } from '../services/calls.service.js';
+import { StorageService } from '../services/storage.service.js';
 
 export class ConsultationsController {
   static async create(req: AuthenticatedRequest, res: Response): Promise<void> {
@@ -23,7 +25,7 @@ export class ConsultationsController {
 
       // Check astrologer rate & availability
       const astrologer = await queryPostgresSingle(
-        'SELECT id, per_minute_rate, hourly_rate, is_online, is_busy FROM astrologer_profiles WHERE id = $1',
+        'SELECT id, per_minute_rate, call_per_minute_rate, hourly_rate, is_online, is_busy, is_chat_enabled, is_call_enabled FROM astrologer_profiles WHERE id = $1',
         [astrologerId]
       );
 
@@ -32,9 +34,27 @@ export class ConsultationsController {
         return;
       }
 
-      const rawRate = Number(astrologer.per_minute_rate);
+      if (type === 'chat' && astrologer.is_chat_enabled === false) {
+        res.status(400).json({
+          success: false,
+          error: 'This astrologer currently only accepts audio/video call consultations.',
+        });
+        return;
+      }
+
+      if ((type === 'call' || type === 'video') && astrologer.is_call_enabled === false) {
+        res.status(400).json({
+          success: false,
+          error: 'This astrologer currently only accepts live chat consultations.',
+        });
+        return;
+      }
+
+      const chatRate = Number(astrologer.per_minute_rate);
+      const callRate = Number(astrologer.call_per_minute_rate || astrologer.per_minute_rate);
       const hourlyRate = Number(astrologer.hourly_rate);
-      const ratePerMinute = rawRate > 0 ? rawRate : (hourlyRate > 0 ? Math.round((hourlyRate / 60) * 100) / 100 : 20.0);
+      const defaultChat = chatRate > 0 ? chatRate : (hourlyRate > 0 ? Math.round((hourlyRate / 60) * 100) / 100 : 20.0);
+      const ratePerMinute = (type === 'call' || type === 'video') ? (callRate > 0 ? callRate : 25.0) : defaultChat;
       const minRequiredBalance = ratePerMinute * 1; // Minimum 1 min balance required to start
 
       // Check user wallet
@@ -75,7 +95,7 @@ export class ConsultationsController {
 
       // Check if astrologer is currently engaged in another call or chat
       const activeConsultation = await queryPostgresSingle(
-        `SELECT id, type FROM consultations WHERE astrologer_id = $1 AND state IN ('ACTIVE', 'IN_PROGRESS', 'ACCEPTED') LIMIT 1`,
+        `SELECT id, type FROM consultations WHERE astrologer_id = $1 AND state IN ('ACTIVE', 'ACCEPTED') LIMIT 1`,
         [astrologerId]
       );
       const isCurrentlyEngaged = Boolean(astrologer.is_busy || activeConsultation);
@@ -238,6 +258,30 @@ export class ConsultationsController {
         durationSeconds,
         idempotencyKey,
       });
+
+      // If call recording is provided during consultation end, persist it
+      if (req.body.recordingUrl || req.body.audioBase64) {
+        try {
+          let recUrl = req.body.recordingUrl;
+          let calculatedSize = 0;
+          if (req.body.audioBase64) {
+            const fileName = `call_${id}_${Date.now()}.webm`;
+            recUrl = await StorageService.saveBase64Audio(fileName, req.body.audioBase64);
+            calculatedSize = Math.round((req.body.audioBase64.length * 3) / 4);
+          }
+          if (recUrl) {
+            await CallsService.saveCallRecording({
+              consultationId: id,
+              callerId: callerUserId,
+              recordingUrl: recUrl,
+              fileSize: calculatedSize,
+              durationSeconds: durationSeconds || 0,
+            });
+          }
+        } catch (recErr) {
+          console.warn('[Consultations.end] Call recording persistence warning:', recErr);
+        }
+      }
 
       const finalized = await queryPostgresSingle('SELECT * FROM consultations WHERE id = $1', [id]);
 

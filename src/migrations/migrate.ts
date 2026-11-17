@@ -40,6 +40,11 @@ export async function runMigrations(closePool: boolean = true) {
       '011_astrologer_joined_tracking.sql',
       '012_unique_payment_id.sql',
       '013_seed_astrologers.sql',
+      '014_seed_astro_shop_gems_and_stones.sql',
+      '015_astrologer_muhurat_and_call_rates.sql',
+      '016_astrologer_chat_and_call_channels.sql',
+      '017_chat_messages_and_call_recordings.sql',
+      '018_astrologer_verification_applications.sql',
     ];
 
     let appliedCount = 0;

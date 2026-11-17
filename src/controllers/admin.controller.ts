@@ -147,7 +147,9 @@ export class AdminController {
     try {
       const astrologers = await queryPostgres(`
         SELECT u.id, u.email, u.phone, u.status, ap.display_name, ap.experience_years,
-               ap.hourly_rate, ap.per_minute_rate, ap.is_verified, ap.verification_status,
+               ap.hourly_rate, ap.per_minute_rate, ap.call_per_minute_rate, ap.is_muhurat_eligible,
+               ap.is_chat_enabled, ap.is_call_enabled,
+               ap.is_verified, ap.verification_status,
                ap.is_online, ap.is_busy, ap.rating, ap.total_reviews, ap.total_consultations,
                ap.languages, ap.specializations, p.avatar_url, ap.created_at,
                GREATEST(
@@ -295,14 +297,36 @@ export class AdminController {
   static async verifyAstrologer(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
       const { id } = req.params;
-      const { isVerified, status = 'approved' } = req.body;
+      const {
+        isVerified,
+        status = 'approved',
+        chatRate,
+        callRate,
+        perMinuteRate,
+        isMuhuratEligible,
+        isChatEnabled,
+        isCallEnabled,
+      } = req.body;
       const verifiedBool = isVerified ?? (status === 'approved');
+
+      const chatPrice = chatRate !== undefined && chatRate !== null && chatRate !== '' ? Number(chatRate) : (perMinuteRate !== undefined && perMinuteRate !== null && perMinuteRate !== '' ? Number(perMinuteRate) : null);
+      const callPrice = callRate !== undefined && callRate !== null && callRate !== '' ? Number(callRate) : null;
+      const muhuratBool = isMuhuratEligible !== undefined ? Boolean(isMuhuratEligible) : null;
+      const chatBool = isChatEnabled !== undefined ? Boolean(isChatEnabled) : null;
+      const callBool = isCallEnabled !== undefined ? Boolean(isCallEnabled) : null;
 
       await queryPostgres(
         `UPDATE astrologer_profiles
-         SET is_verified = $1, verification_status = $2, updated_at = NOW()
+         SET is_verified = $1,
+             verification_status = $2,
+             per_minute_rate = COALESCE($4, per_minute_rate),
+             call_per_minute_rate = COALESCE($5, call_per_minute_rate),
+             is_muhurat_eligible = COALESCE($6, is_muhurat_eligible),
+             is_chat_enabled = COALESCE($7, is_chat_enabled),
+             is_call_enabled = COALESCE($8, is_call_enabled),
+             updated_at = NOW()
          WHERE id = $3`,
-        [verifiedBool, status, id]
+        [verifiedBool, status, id, chatPrice, callPrice, muhuratBool, chatBool, callBool]
       );
 
       await queryPostgres(
@@ -316,10 +340,10 @@ export class AdminController {
       await queryPostgres(
         `INSERT INTO audit_logs (user_id, action, entity_type, entity_id, details)
          VALUES ($1, 'admin_verify_astrologer', 'astrologer_profile', $2, $3)`,
-        [req.user?.userId, id, JSON.stringify({ isVerified: verifiedBool, status })]
+        [req.user?.userId, id, JSON.stringify({ isVerified: verifiedBool, status, chatPrice, callPrice, isMuhuratEligible: muhuratBool, isChatEnabled: chatBool, isCallEnabled: callBool })]
       );
 
-      res.status(200).json({ success: true, message: 'Astrologer verification updated' });
+      res.status(200).json({ success: true, message: 'Astrologer verification and rate settings updated' });
     } catch (err) {
       res.status(500).json({ success: false, error: (err as Error).message });
     }
@@ -365,51 +389,101 @@ export class AdminController {
 
   static async getAdminNotifications(req: AuthenticatedRequest, res: Response): Promise<void> {
     try {
-      // 1. Pending Astrologer KYC requests
-      const pendingAstrologers = await queryPostgres(`
-        SELECT u.id, u.email, u.phone, ap.display_name, ap.created_at
-        FROM astrologer_profiles ap
-        JOIN users u ON u.id = ap.id
-        WHERE ap.verification_status = 'pending' OR ap.is_verified = false
-        ORDER BY ap.created_at DESC
-        LIMIT 10
-      `);
+      // 1. New & Pending Astrologer Verification Applications (Primary Priority)
+      const pendingApplications = await queryPostgres(`
+        SELECT a.id, a.application_id, a.full_name, a.display_name, a.phone, a.email, a.status, a.submitted_at
+        FROM astrologer_applications a
+        WHERE a.status IN ('SUBMITTED', 'UNDER_REVIEW')
+        ORDER BY a.submitted_at DESC
+        LIMIT 15
+      `).catch(() => []);
 
-      // 2. Recent system notifications from notifications table
-      const systemNotifs = await queryPostgres(`
-        SELECT n.id, n.title, n.body, n.type, n.is_read, n.created_at
-        FROM notifications n
-        WHERE n.type IN ('admin_broadcast', 'kyc_pending', 'payout_request', 'system_alert')
-           OR n.user_id = $1
-        ORDER BY n.created_at DESC
-        LIMIT 20
-      `, [req.user?.userId]);
-
-      // Map pending astrologers into rich actionable notifications
-      const kycNotifications = (pendingAstrologers || []).map((a: any) => ({
-        id: `kyc-${a.id}`,
-        title: 'New Astrologer KYC Application',
-        message: `${a.display_name || 'Astrologer'} (${a.phone || a.email || 'New'}) submitted KYC application for admin approval.`,
-        type: 'kyc',
-        entityId: a.id,
-        link: '/astrologers',
-        isRead: false,
-        createdAt: a.created_at,
+      const appNotifications = (pendingApplications || []).map((app: any) => ({
+        id: `app-${app.id}`,
+        title: 'New Astrologer Application',
+        message: `${app.display_name} (${app.full_name}, ${app.phone}) applied for astrologer verification [${app.application_id}].`,
+        type: 'astrologer_application',
+        entityId: app.id,
+        link: '/astrologers/verification',
+        isRead: app.status === 'UNDER_REVIEW',
+        createdAt: app.submitted_at,
       }));
 
-      // Combine and sort by createdAt desc
-      const allNotifications = [
-        ...kycNotifications,
-        ...(systemNotifs || []).map((n: any) => ({
+      // 2. Active / Requested Consultations
+      const recentConsultations = await queryPostgres(`
+        SELECT c.id, c.type, c.state, c.created_at,
+               p.full_name AS customer_name,
+               ap.display_name AS astrologer_name
+        FROM consultations c
+        LEFT JOIN profiles p ON c.user_id = p.id
+        LEFT JOIN astrologer_profiles ap ON c.astrologer_id = ap.id
+        WHERE c.state IN ('REQUESTED', 'ACCEPTED', 'ACTIVE')
+        ORDER BY c.created_at DESC
+        LIMIT 10
+      `).catch(() => []);
+
+      const consultationNotifs = (recentConsultations || []).map((c: any) => ({
+        id: `cons-${c.id}`,
+        title: `Live Consultation: ${c.type.toUpperCase()}`,
+        message: `${c.customer_name || 'Seeker'} connected with ${c.astrologer_name || 'Astrologer'}.`,
+        type: 'consultation',
+        link: '/consultations',
+        isRead: false,
+        createdAt: c.created_at,
+      }));
+
+      // 3. Customer Enquiries
+      const recentEnquiries = await queryPostgres(`
+        SELECT id, name, email, subject, message, created_at
+        FROM contact_enquiries
+        ORDER BY created_at DESC
+        LIMIT 5
+      `).catch(() => []);
+
+      const enquiryNotifs = (recentEnquiries || []).map((e: any) => ({
+        id: `enq-${e.id}`,
+        title: 'New Customer Enquiry',
+        message: `${e.name}: ${e.subject || (e.message ? e.message.substring(0, 80) : 'General query')}`,
+        type: 'enquiry',
+        link: '/enquiries',
+        isRead: false,
+        createdAt: e.created_at,
+      }));
+
+      // 4. Notifications table entries
+      const systemNotifs = await queryPostgres(`
+        SELECT n.id, n.title, n.body, n.type, n.is_read, n.created_at, n.data
+        FROM notifications n
+        WHERE n.type IN ('admin_broadcast', 'astrologer_application', 'kyc_pending', 'payout_request', 'system_alert')
+           OR n.user_id = $1
+        ORDER BY n.created_at DESC
+        LIMIT 25
+      `, [req.user?.userId]).catch(() => []);
+
+      const systemMapped = (systemNotifs || []).map((n: any) => {
+        const link = n.data?.link || (n.type === 'astrologer_application' ? '/astrologers/verification' : n.type === 'kyc' ? '/astrologers' : '/dashboard');
+        return {
           id: String(n.id),
           title: n.title,
           message: n.body,
           type: n.type,
-          link: n.type === 'kyc' ? '/astrologers' : '/dashboard',
+          link,
           isRead: Boolean(n.is_read),
           createdAt: n.created_at,
-        })),
-      ].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+        };
+      });
+
+      // Combine, deduplicate by ID, and sort by createdAt desc
+      const combinedMap = new Map<string, any>();
+      [...appNotifications, ...systemMapped, ...consultationNotifs, ...enquiryNotifs].forEach((item) => {
+        if (!combinedMap.has(item.id)) {
+          combinedMap.set(item.id, item);
+        }
+      });
+
+      const allNotifications = Array.from(combinedMap.values()).sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
 
       res.status(200).json({
         success: true,

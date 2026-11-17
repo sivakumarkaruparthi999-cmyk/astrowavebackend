@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { CallSession, ICallSession } from '../models/mongo/CallSession.js';
 import { VideoCallSession, IVideoCallSession } from '../models/mongo/VideoCallSession.js';
+import { queryPostgres, queryPostgresSingle } from '../config/db.js';
 
 export class CallsService {
   /**
@@ -104,6 +105,25 @@ export class CallsService {
       await session.save();
     }
 
+    // Authoritative permanent storage in PostgreSQL call_sessions
+    try {
+      await queryPostgres(
+        `INSERT INTO call_sessions (session_id, consultation_id, user_id, astrologer_id, type, status, duration_seconds)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          sessionId || `cses_${consultationId}`,
+          consultationId,
+          userId,
+          astrologerId,
+          type || 'voice',
+          status || 'initiating',
+          durationSeconds || 0,
+        ]
+      );
+    } catch (pgErr) {
+      console.warn('[PostgreSQL] call_sessions write error:', pgErr);
+    }
+
     return session;
   }
 
@@ -186,6 +206,84 @@ export class CallsService {
     return (
       (await VideoCallSession.findOne({ sessionId: consultationIdOrSessionId })) ||
       (await VideoCallSession.findOne({ consultationId: consultationIdOrSessionId }).sort({ createdAt: -1 }))
+    );
+  }
+
+  /**
+   * Save authoritative call recording into PostgreSQL and update consultation
+   */
+  static async saveCallRecording(data: {
+    consultationId: string;
+    callerId?: string;
+    receiverId?: string;
+    recordingUrl: string;
+    fileName?: string;
+    fileSize?: number;
+    durationSeconds?: number;
+    callType?: string;
+    mimeType?: string;
+  }): Promise<any> {
+    const {
+      consultationId,
+      callerId,
+      receiverId,
+      recordingUrl,
+      fileName,
+      fileSize = 0,
+      durationSeconds = 0,
+      callType = 'voice',
+      mimeType = 'audio/webm',
+    } = data;
+
+    // 1. Update consultations table with recording_url
+    await queryPostgres(
+      `UPDATE consultations
+       SET recording_url = $1,
+           total_duration_seconds = GREATEST(total_duration_seconds, $2),
+           updated_at = NOW()
+       WHERE id = $3`,
+      [recordingUrl, durationSeconds, consultationId]
+    );
+
+    // 2. Insert into call_recordings table
+    const result = await queryPostgresSingle(
+      `INSERT INTO call_recordings (consultation_id, caller_id, receiver_id, recording_url, file_name, file_size, duration_seconds, call_type, mime_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING *`,
+      [
+        consultationId,
+        callerId || null,
+        receiverId || null,
+        recordingUrl,
+        fileName || null,
+        fileSize,
+        durationSeconds,
+        callType,
+        mimeType,
+      ]
+    );
+
+    // 3. Update call_sessions if present
+    await queryPostgres(
+      `UPDATE call_sessions
+       SET recording_url = $1,
+           duration_seconds = GREATEST(duration_seconds, $2),
+           status = 'ended',
+           updated_at = NOW()
+       WHERE consultation_id = $3`,
+      [recordingUrl, durationSeconds, consultationId]
+    );
+
+    return result;
+  }
+
+  /**
+   * Retrieve call recordings for a consultation
+   */
+  static async getCallRecordings(consultationId: string): Promise<any[]> {
+    return queryPostgres(
+      `SELECT * FROM call_recordings WHERE consultation_id = $1 ORDER BY created_at DESC`,
+      [consultationId]
     );
   }
 }

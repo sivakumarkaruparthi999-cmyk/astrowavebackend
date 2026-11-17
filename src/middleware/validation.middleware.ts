@@ -192,4 +192,10 @@ export const adminVerifyAstrologerSchema = z
     isVerified: z.boolean().optional(),
     status: z.enum(['approved', 'rejected', 'pending', 'suspended']).optional(),
     reason: z.string().optional(),
+    chatRate: z.coerce.number().min(0).optional(),
+    callRate: z.coerce.number().min(0).optional(),
+    perMinuteRate: z.coerce.number().min(0).optional(),
+    isMuhuratEligible: z.boolean().optional(),
+    isChatEnabled: z.boolean().optional(),
+    isCallEnabled: z.boolean().optional(),
   });

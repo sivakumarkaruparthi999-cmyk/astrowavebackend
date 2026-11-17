@@ -15,7 +15,7 @@ if (!fs.existsSync(UPLOAD_DIR)) {
 }
 
 // Subdirectories for structured storage
-const folders = ['avatars', 'documents', 'pooja', 'chat', 'reports'];
+const folders = ['avatars', 'documents', 'pooja', 'chat', 'reports', 'recordings'];
 folders.forEach((folder) => {
   const dir = path.join(UPLOAD_DIR, folder);
   if (!fs.existsSync(dir)) {
@@ -23,8 +23,20 @@ folders.forEach((folder) => {
   }
 });
 
-const ALLOWED_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.pdf']);
-const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp', 'application/pdf']);
+const ALLOWED_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.pdf', '.webm', '.wav', '.mp3', '.ogg', '.m4a']);
+const ALLOWED_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'application/pdf',
+  'audio/webm',
+  'audio/wav',
+  'audio/mpeg',
+  'audio/mp3',
+  'audio/ogg',
+  'audio/x-m4a',
+  'video/webm',
+]);
 const DANGEROUS_EXTENSIONS = ['.exe', '.sh', '.bat', '.php', '.js', '.py', '.svg', '.html', '.htm', '.jsp', '.asp', '.dll', '.cmd'];
 
 /**
@@ -187,5 +199,29 @@ export class StorageService {
 
     await fs.promises.writeFile(filePath, buffer);
     return `${BASE_URL}/uploads/${subfolder}/${safeName}`;
+  }
+
+  static async saveRecordingBuffer(filename: string, buffer: Buffer): Promise<string> {
+    const safeName = path.basename(filename);
+    const folderPath = path.join(UPLOAD_DIR, 'recordings');
+    if (!fs.existsSync(folderPath)) {
+      fs.mkdirSync(folderPath, { recursive: true });
+    }
+    const filePath = path.join(folderPath, safeName);
+    await fs.promises.writeFile(filePath, buffer);
+    return `${BASE_URL}/uploads/recordings/${safeName}`;
+  }
+
+  static async saveBase64Audio(filename: string, base64Data: string): Promise<string> {
+    const safeName = path.basename(filename);
+    const folderPath = path.join(UPLOAD_DIR, 'recordings');
+    if (!fs.existsSync(folderPath)) {
+      fs.mkdirSync(folderPath, { recursive: true });
+    }
+    const cleanData = base64Data.replace(/^data:audio\/\w+;base64,/, '').replace(/^data:video\/\w+;base64,/, '');
+    const buffer = Buffer.from(cleanData, 'base64');
+    const filePath = path.join(folderPath, safeName);
+    await fs.promises.writeFile(filePath, buffer);
+    return `${BASE_URL}/uploads/recordings/${safeName}`;
   }
 }

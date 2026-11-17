@@ -9,6 +9,7 @@ import fs from 'fs';
 import authRoutes from './routes/auth.routes.js';
 import usersRoutes from './routes/users.routes.js';
 import astrologersRoutes from './routes/astrologers.routes.js';
+import astrologerApplicationsRoutes from './routes/astrologer-applications.routes.js';
 import consultationsRoutes from './routes/consultations.routes.js';
 import chatRoutes from './routes/chat.routes.js';
 import poojaRoutes from './routes/pooja.routes.js';
@@ -198,6 +199,7 @@ const uploadDir = process.env.STORAGE_PATH || process.env.UPLOAD_DIR || path.joi
 app.use('/uploads/avatars', express.static(path.join(uploadDir, 'avatars')));
 app.use('/uploads/pooja', express.static(path.join(uploadDir, 'pooja')));
 app.use('/uploads/chat', express.static(path.join(uploadDir, 'chat')));
+app.use('/uploads/recordings', express.static(path.join(uploadDir, 'recordings')));
 
 // Protected documents serving (requires authentication, path traversal defense, and ownership/admin check)
 app.get('/uploads/documents/:filename', authenticate, async (req: AuthenticatedRequest, res: Response) => {
@@ -429,6 +431,7 @@ app.get('/api/health', async (_req: Request, res: Response) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/astrologers', publicLimiter, astrologersRoutes);
+app.use('/api/astrologer-applications', astrologerApplicationsRoutes);
 app.use('/api/consultations', consultationLimiter, consultationsRoutes);
 app.use('/api/chat', chatLimiter, chatRoutes);
 app.use('/api/pooja', publicLimiter, poojaRoutes);

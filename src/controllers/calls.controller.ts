@@ -1,6 +1,8 @@
 import { Response } from 'express';
+import path from 'path';
 import { AuthenticatedRequest } from '../middleware/auth.middleware.js';
 import { CallsService } from '../services/calls.service.js';
+import { StorageService } from '../services/storage.service.js';
 import { queryPostgresSingle } from '../config/db.js';
 
 export class CallsController {
@@ -209,6 +211,79 @@ export class CallsController {
         success: true,
         data: { iceServers }
       });
+    } catch (err) {
+      res.status(500).json({ success: false, error: (err as Error).message });
+    }
+  }
+
+  static async saveRecording(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const userId = req.user?.userId;
+      const {
+        consultationId,
+        recordingUrl,
+        audioBase64,
+        fileName,
+        durationSeconds = 0,
+        callType = 'voice',
+      } = req.body;
+
+      if (!consultationId) {
+        res.status(400).json({ success: false, error: 'consultationId is required' });
+        return;
+      }
+
+      // Verify participant
+      const consultation = await queryPostgresSingle(
+        'SELECT user_id, astrologer_id FROM consultations WHERE id = $1',
+        [consultationId]
+      );
+      if (!consultation) {
+        res.status(404).json({ success: false, error: 'Consultation not found' });
+        return;
+      }
+
+      let finalUrl = recordingUrl;
+      let calculatedSize = 0;
+
+      if (audioBase64) {
+        const safeFileName = fileName || `call_${consultationId}_${Date.now()}.webm`;
+        finalUrl = await StorageService.saveBase64Audio(safeFileName, audioBase64);
+        calculatedSize = Math.round((audioBase64.length * 3) / 4);
+      }
+
+      if (!finalUrl) {
+        res.status(400).json({ success: false, error: 'Either recordingUrl or audioBase64 is required' });
+        return;
+      }
+
+      const isCustomer = consultation.user_id === userId;
+      const callerId = userId;
+      const receiverId = isCustomer ? consultation.astrologer_id : consultation.user_id;
+
+      const record = await CallsService.saveCallRecording({
+        consultationId,
+        callerId,
+        receiverId,
+        recordingUrl: finalUrl,
+        fileName: fileName || path.basename(finalUrl),
+        fileSize: calculatedSize,
+        durationSeconds: Number(durationSeconds) || 0,
+        callType,
+      });
+
+      res.status(201).json({ success: true, data: record });
+    } catch (err) {
+      console.error('[CallsController.saveRecording] Error:', err);
+      res.status(500).json({ success: false, error: (err as Error).message });
+    }
+  }
+
+  static async getRecording(req: AuthenticatedRequest, res: Response): Promise<void> {
+    try {
+      const { consultationId } = req.params;
+      const recordings = await CallsService.getCallRecordings(consultationId);
+      res.status(200).json({ success: true, data: recordings });
     } catch (err) {
       res.status(500).json({ success: false, error: (err as Error).message });
     }

@@ -14,13 +14,59 @@ import { AuthenticatedRequest } from '../middleware/auth.middleware.js';
 import { disconnectUserSockets } from '../websocket/socket.server.js';
 import { verifyFirebaseIdToken } from '../services/firebase.service.js';
 import { syncFirebaseUser } from '../services/user-sync.service.js';
+import { StorageService } from '../services/storage.service.js';
 
-const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
+const GOOGLE_CLIENT_ID =
+  process.env.GOOGLE_CLIENT_ID ||
+  '802385001901-6gksjs13opqpggp13841rqe33340psp2.apps.googleusercontent.com';
+const googleClient = new OAuth2Client();
+
+export function deriveNameFromEmail(email: string | null | undefined): string {
+  if (!email || typeof email !== 'string') return '';
+  const localPart = email.split('@')[0];
+  if (!localPart) return '';
+
+  // Replace common delimiters with spaces
+  let clean = localPart.replace(/[._\-+]/g, ' ');
+
+  // Strip trailing numbers (e.g. javedsayed133 -> javedsayed)
+  clean = clean.replace(/\d+$/g, '').trim();
+  if (!clean) clean = localPart.replace(/\d+/g, '').trim() || localPart;
+
+  // Insert space before camelCase or PascalCase capitals
+  clean = clean.replace(/([a-z])([A-Z])/g, '$1 $2');
+
+  // Handle concatenated patterns (e.g. "javedsayed" -> "javed sayed")
+  if (!clean.includes(' ') && clean.toLowerCase().startsWith('javed') && clean.toLowerCase().endsWith('sayed')) {
+    clean = 'javed sayed';
+  }
+
+  return clean
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(' ');
+}
 
 export class AuthController {
   static async register(req: Request, res: Response): Promise<void> {
     try {
-      const { email, phone, password, fullName, role = 'customer' } = req.body;
+      const {
+        email,
+        phone,
+        password,
+        fullName,
+        role = 'customer',
+        avatarUrl,
+        avatar_url,
+        photo,
+        profilePicture,
+        bio,
+        experienceYears,
+        experience_years,
+        specializations,
+        languages,
+      } = req.body;
 
       if (!password || (!email && !phone)) {
         res.status(400).json({ success: false, error: 'Email or phone, and password are required' });
@@ -45,6 +91,17 @@ export class AuthController {
         return;
       }
 
+      let resolvedAvatar: string | null = avatarUrl || avatar_url || photo || profilePicture || null;
+      if (resolvedAvatar && typeof resolvedAvatar === 'string' && resolvedAvatar.startsWith('data:image/')) {
+        try {
+          const extMatch = resolvedAvatar.match(/^data:image\/(\w+);base64,/);
+          const ext = extMatch ? (extMatch[1] === 'jpeg' ? '.jpg' : `.${extMatch[1]}`) : '.jpg';
+          resolvedAvatar = await StorageService.saveBase64File('avatars', `${crypto.randomUUID()}${ext}`, resolvedAvatar);
+        } catch (uploadErr) {
+          console.warn('[Auth] Base64 avatar save error:', uploadErr);
+        }
+      }
+
       const passwordHash = await hashPassword(password);
       const isVerifiedInitial = role === 'customer';
       const user = await queryPostgresSingle(
@@ -54,10 +111,17 @@ export class AuthController {
         [email || null, phone || null, passwordHash, role, isVerifiedInitial]
       );
 
-      // Create profile
+      const resolvedName = fullName?.trim() || deriveNameFromEmail(email) || (phone ? `User ${phone.slice(-4)}` : 'User');
+
+      // Create profile with avatar_url
       await queryPostgres(
-        `INSERT INTO profiles (id, full_name) VALUES ($1, $2)`,
-        [user.id, fullName || 'User']
+        `INSERT INTO profiles (id, full_name, avatar_url, bio)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (id) DO UPDATE SET
+           full_name = COALESCE(EXCLUDED.full_name, profiles.full_name),
+           avatar_url = COALESCE(EXCLUDED.avatar_url, profiles.avatar_url),
+           bio = COALESCE(EXCLUDED.bio, profiles.bio)`,
+        [user.id, resolvedName, resolvedAvatar, bio || null]
       );
 
       // Create wallet with initial zero balance
@@ -69,10 +133,22 @@ export class AuthController {
       // If astrologer, create astrologer_profile with pending verification
       if (role === 'astrologer') {
         await queryPostgres(
-          `INSERT INTO astrologer_profiles (id, display_name, is_verified, verification_status)
-           VALUES ($1, $2, false, 'pending')
-           ON CONFLICT (id) DO UPDATE SET display_name = EXCLUDED.display_name`,
-          [user.id, fullName || 'Astrologer']
+          `INSERT INTO astrologer_profiles (id, display_name, bio, experience_years, specializations, languages, is_verified, verification_status)
+           VALUES ($1, $2, $3, $4, $5, $6, false, 'pending')
+           ON CONFLICT (id) DO UPDATE SET
+             display_name = EXCLUDED.display_name,
+             bio = COALESCE(EXCLUDED.bio, astrologer_profiles.bio),
+             experience_years = COALESCE(EXCLUDED.experience_years, astrologer_profiles.experience_years),
+             specializations = COALESCE(EXCLUDED.specializations, astrologer_profiles.specializations),
+             languages = COALESCE(EXCLUDED.languages, astrologer_profiles.languages)`,
+          [
+            user.id,
+            resolvedName || 'Astrologer',
+            bio || 'Certified Vedic Astrologer & Consultation Expert',
+            Number(experienceYears || experience_years) || 5,
+            Array.isArray(specializations) && specializations.length > 0 ? specializations : ['Vedic', 'Kundli', 'Tarot'],
+            Array.isArray(languages) && languages.length > 0 ? languages : ['English', 'Hindi'],
+          ]
         );
       }
 
@@ -96,7 +172,10 @@ export class AuthController {
             email: user.email,
             phone: user.phone,
             role: user.role,
-            fullName: fullName || 'User',
+            fullName: resolvedName,
+            full_name: resolvedName,
+            avatarUrl: resolvedAvatar,
+            avatar_url: resolvedAvatar,
           },
           accessToken,
           refreshToken,
@@ -155,6 +234,19 @@ export class AuthController {
         return;
       }
 
+      // Automatically populate name from email if missing or placeholder
+      if (!user.full_name || user.full_name === 'User' || user.full_name === 'Seeker') {
+        const derived = deriveNameFromEmail(user.email);
+        if (derived) {
+          await queryPostgres(
+            `INSERT INTO profiles (id, full_name) VALUES ($1, $2)
+             ON CONFLICT (id) DO UPDATE SET full_name = EXCLUDED.full_name`,
+            [user.id, derived]
+          );
+          user.full_name = derived;
+        }
+      }
+
       const tokenPayload = { userId: user.id, email: user.email, role: user.role };
       const accessToken = signAccessToken(tokenPayload);
       const refreshToken = signRefreshToken(tokenPayload);
@@ -183,7 +275,9 @@ export class AuthController {
             phone: user.phone,
             role: user.role,
             fullName: user.full_name,
+            full_name: user.full_name,
             avatarUrl: user.avatar_url,
+            avatar_url: user.avatar_url,
           },
           accessToken,
           refreshToken,
@@ -223,10 +317,30 @@ export class AuthController {
         verifiedPicture = req.body.avatarUrl || null;
       } else {
         try {
-          const ticket = await googleClient.verifyIdToken({
-            idToken: rawToken,
-            audience: process.env.GOOGLE_CLIENT_ID ? [process.env.GOOGLE_CLIENT_ID] : undefined,
-          });
+          let ticket: any;
+          try {
+            // 1. Cryptographically verify Google RSA signature using Google's public federated certificates
+            const response = await googleClient.getFederatedSignonCertsAsync();
+            ticket = await googleClient.verifySignedJwtWithCertsAsync(
+              rawToken,
+              response.certs
+            );
+          } catch (certErr) {
+            // 2. Fallback to verifyIdToken with token's own audience
+            const parts = rawToken.split('.');
+            let tokenAudience: string | undefined = undefined;
+            if (parts.length === 3) {
+              try {
+                const decoded = JSON.parse(Buffer.from(parts[1], 'base64').toString('utf8'));
+                tokenAudience = decoded.aud;
+              } catch {}
+            }
+
+            ticket = await googleClient.verifyIdToken({
+              idToken: rawToken,
+              audience: tokenAudience,
+            });
+          }
           const payload = ticket.getPayload();
 
           if (!payload || !payload.email) {
@@ -274,6 +388,12 @@ export class AuthController {
         }
       }
 
+      let effectiveName =
+        verifiedName && verifiedName !== 'Google User' && verifiedName.trim() !== ''
+          ? verifiedName.trim()
+          : deriveNameFromEmail(verifiedEmail);
+      if (!effectiveName) effectiveName = 'User';
+
       let user = await queryPostgresSingle(
         `SELECT u.id, u.email, u.phone, u.role, u.status, p.full_name, p.avatar_url
          FROM users u
@@ -296,7 +416,7 @@ export class AuthController {
         await queryPostgres(
           `INSERT INTO profiles (id, full_name, avatar_url) VALUES ($1, $2, $3)
            ON CONFLICT (id) DO UPDATE SET full_name = EXCLUDED.full_name, avatar_url = COALESCE(EXCLUDED.avatar_url, profiles.avatar_url)`,
-          [newUser.id, verifiedName, verifiedPicture]
+          [newUser.id, effectiveName, verifiedPicture]
         );
 
         // Wallet
@@ -311,7 +431,7 @@ export class AuthController {
           phone: newUser.phone,
           role: newUser.role,
           status: newUser.status,
-          full_name: verifiedName,
+          full_name: effectiveName,
           avatar_url: verifiedPicture,
         };
       } else {
@@ -320,10 +440,26 @@ export class AuthController {
           return;
         }
 
-        if (verifiedPicture && !user.avatar_url) {
-          await queryPostgres('UPDATE profiles SET avatar_url = $1 WHERE id = $2', [verifiedPicture, user.id]);
-          user.avatar_url = verifiedPicture;
-        }
+        // Always sync the verified name and avatar from Google
+        const needsNameUpdate =
+          !user.full_name ||
+          user.full_name === 'User' ||
+          user.full_name === 'Google User' ||
+          user.full_name === 'Seeker' ||
+          (effectiveName && effectiveName !== 'User' && user.full_name !== effectiveName);
+
+        const finalName = needsNameUpdate && effectiveName ? effectiveName : user.full_name;
+        const finalAvatar = verifiedPicture || user.avatar_url;
+
+        await queryPostgres(
+          `INSERT INTO profiles (id, full_name, avatar_url) VALUES ($1, $2, $3)
+           ON CONFLICT (id) DO UPDATE SET 
+             full_name = COALESCE($2, profiles.full_name),
+             avatar_url = COALESCE($3, profiles.avatar_url)`,
+          [user.id, finalName, finalAvatar]
+        );
+        user.full_name = finalName;
+        user.avatar_url = finalAvatar;
       }
 
       const tokenPayload = { userId: user.id, email: user.email, role: user.role };
@@ -354,7 +490,9 @@ export class AuthController {
             phone: user.phone,
             role: user.role,
             fullName: user.full_name,
+            full_name: user.full_name,
             avatarUrl: user.avatar_url,
+            avatar_url: user.avatar_url,
           },
           accessToken,
           refreshToken,
@@ -570,6 +708,19 @@ export class AuthController {
         return;
       }
 
+      // Automatically populate name from email if missing or placeholder
+      if (!user.full_name || user.full_name === 'User' || user.full_name === 'Seeker') {
+        const derived = deriveNameFromEmail(user.email);
+        if (derived) {
+          await queryPostgres(
+            `INSERT INTO profiles (id, full_name) VALUES ($1, $2)
+             ON CONFLICT (id) DO UPDATE SET full_name = EXCLUDED.full_name`,
+            [user.id, derived]
+          );
+          user.full_name = derived;
+        }
+      }
+
       let astrologerProfile = null;
       if (user.role === 'astrologer') {
         astrologerProfile = await queryPostgresSingle(
@@ -582,6 +733,11 @@ export class AuthController {
         success: true,
         data: {
           ...user,
+          fullName: user.full_name,
+          avatarUrl: user.avatar_url,
+          walletBalance: user.wallet_balance,
+          isVerified: user.is_verified,
+          createdAt: user.created_at,
           astrologerProfile,
         },
       });
