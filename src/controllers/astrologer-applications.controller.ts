@@ -582,6 +582,50 @@ export class AstrologerApplicationsController {
             callBool,
           ]
         );
+
+        // Send In-App Notification and WebSocket Alert to the Astrologer
+        try {
+          const notifTitle = 'Application Approved! 🎉';
+          const notifBody = `Congratulations ${app.display_name}! Your AstroWave Astrologer application has been approved by Admin. Your profile is now live and verified on the seeker portal.`;
+
+          await queryPostgres(
+            `INSERT INTO notifications (user_id, title, body, type, channel, data)
+             VALUES ($1, $2, $3, 'astrologer_approved', 'in_app', $4)`,
+            [
+              userId,
+              notifTitle,
+              notifBody,
+              JSON.stringify({
+                applicationId: app.application_id,
+                displayName: app.display_name,
+                approvedAt: new Date().toISOString(),
+                link: '/profile',
+              }),
+            ]
+          );
+
+          const io = getSocketServer();
+          if (io) {
+            const notifPayload = {
+              id: `apprv_${app.id}_${Date.now()}`,
+              userId,
+              title: notifTitle,
+              message: notifBody,
+              body: notifBody,
+              type: 'astrologer_approved',
+              applicationId: app.application_id,
+              displayName: app.display_name,
+              approvedAt: new Date().toISOString(),
+              link: '/profile',
+            };
+            io.to(`user_${userId}`).emit('notification', notifPayload);
+            io.to(`user_${userId}`).emit('astrologer_approved', notifPayload);
+            io.emit('astrologer_status_changed', { userId, status: 'APPROVED', isVerified: true });
+            console.log(`[AstrologerApplications] Dispatched approval notification to user_${userId}`);
+          }
+        } catch (notifErr) {
+          console.warn('[AstrologerApplications] Failed to dispatch approval notification:', notifErr);
+        }
       }
 
       // Audit log
@@ -656,6 +700,46 @@ export class AstrologerApplicationsController {
            WHERE id = $1`,
           [app.user_id]
         );
+
+        // Send Rejection Notification to the Astrologer
+        try {
+          const rejTitle = 'Application Status Update';
+          const rejBody = `Your AstroWave astrologer verification application was not approved at this time. Reason: ${reason.trim()}`;
+
+          await queryPostgres(
+            `INSERT INTO notifications (user_id, title, body, type, channel, data)
+             VALUES ($1, $2, $3, 'astrologer_rejected', 'in_app', $4)`,
+            [
+              app.user_id,
+              rejTitle,
+              rejBody,
+              JSON.stringify({
+                applicationId: app.application_id,
+                reason: reason.trim(),
+                rejectedAt: new Date().toISOString(),
+              }),
+            ]
+          );
+
+          const io = getSocketServer();
+          if (io) {
+            const notifPayload = {
+              id: `rej_${app.id}_${Date.now()}`,
+              userId: app.user_id,
+              title: rejTitle,
+              message: rejBody,
+              body: rejBody,
+              type: 'astrologer_rejected',
+              applicationId: app.application_id,
+              reason: reason.trim(),
+            };
+            io.to(`user_${app.user_id}`).emit('notification', notifPayload);
+            io.to(`user_${app.user_id}`).emit('astrologer_rejected', notifPayload);
+            io.emit('astrologer_status_changed', { userId: app.user_id, status: 'REJECTED', isVerified: false });
+          }
+        } catch (notifErr) {
+          console.warn('[AstrologerApplications] Rejection notification error:', notifErr);
+        }
       }
 
       // Audit log

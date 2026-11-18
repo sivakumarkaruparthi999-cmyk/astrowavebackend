@@ -1,7 +1,7 @@
 import { Response } from 'express';
 import { pgPool, queryPostgres, queryPostgresSingle } from '../config/db.js';
 import { AuthenticatedRequest } from '../middleware/auth.middleware.js';
-import { disconnectUserSockets } from '../websocket/socket.server.js';
+import { disconnectUserSockets, getSocketServer } from '../websocket/socket.server.js';
 
 export class AdminController {
   static async getDashboardStats(req: AuthenticatedRequest, res: Response): Promise<void> {
@@ -342,6 +342,38 @@ export class AdminController {
          VALUES ($1, 'admin_verify_astrologer', 'astrologer_profile', $2, $3)`,
         [req.user?.userId, id, JSON.stringify({ isVerified: verifiedBool, status, chatPrice, callPrice, isMuhuratEligible: muhuratBool, isChatEnabled: chatBool, isCallEnabled: callBool })]
       );
+
+      // If approved or verified, send notification to the astrologer
+      if (verifiedBool) {
+        try {
+          const notifTitle = 'Profile Verified! 🎉';
+          const notifBody = 'Congratulations! Your AstroWave Astrologer profile has been verified by Admin. You are now active and visible to seekers.';
+          await queryPostgres(
+            `INSERT INTO notifications (user_id, title, body, type, channel, data)
+             VALUES ($1, $2, $3, 'astrologer_approved', 'in_app', $4)`,
+            [id, notifTitle, notifBody, JSON.stringify({ verifiedAt: new Date().toISOString(), link: '/profile' })]
+          );
+
+          const io = getSocketServer();
+          if (io) {
+            const notifPayload = {
+              id: `verif_${id}_${Date.now()}`,
+              userId: id,
+              title: notifTitle,
+              message: notifBody,
+              body: notifBody,
+              type: 'astrologer_approved',
+              link: '/profile',
+              verifiedAt: new Date().toISOString(),
+            };
+            io.to(`user_${id}`).emit('notification', notifPayload);
+            io.to(`user_${id}`).emit('astrologer_approved', notifPayload);
+            io.emit('astrologer_status_changed', { userId: id, status: 'APPROVED', isVerified: true });
+          }
+        } catch (notifErr) {
+          console.warn('[AdminController] Failed to dispatch astrologer verification notification:', notifErr);
+        }
+      }
 
       res.status(200).json({ success: true, message: 'Astrologer verification and rate settings updated' });
     } catch (err) {
